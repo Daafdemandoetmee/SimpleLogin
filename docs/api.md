@@ -209,10 +209,13 @@ Output: if api key is correct, return a json with user name and whether user is 
   "is_premium": false,
   "email": "john@wick.com",
   "in_trial": true,
+  "trial_end_timestamp": 1234567890,
   "profile_picture_url": "https://profile.png",
-  "max_alias_free_plan": 5,
+  "max_alias_free_plan": 5
 }
 ```
+
+`trial_end_timestamp`: Unix timestamp (integer) of when the trial ends, or `null` if no trial.
 
 If api key is incorrect, return 401.
 
@@ -369,8 +372,8 @@ For ex:
       "is_premium": false
     },
     {
-      "signed_suffix": ".yeah@sl.local.X6_7OQ.i8XL4xsMsn7dxDEWU8eF-Zap0qo",
-      "suffix": ".yeah@sl.local",
+      "signed_suffix": ".yeah@sl.lan.X6_7OQ.i8XL4xsMsn7dxDEWU8eF-Zap0qo",
+      "suffix": ".yeah@sl.lan",
       "is_custom": true,
       "is_premium": false
     }
@@ -465,7 +468,7 @@ Here's an example:
     {
       "creation_date": "2020-04-06 17:57:14+00:00",
       "creation_timestamp": 1586195834,
-      "email": "prefix1.cat@sl.local",
+      "email": "prefix1.cat@sl.lan",
       "name": "A Name",
       "enabled": true,
       "id": 3,
@@ -518,7 +521,7 @@ Alias info, use the same format as in /api/v2/aliases. For example:
 {
   "creation_date": "2020-04-06 17:57:14+00:00",
   "creation_timestamp": 1586195834,
-  "email": "prefix1.cat@sl.local",
+  "email": "prefix1.cat@sl.lan",
   "name": "A Name",
   "enabled": true,
   "id": 3,
@@ -608,7 +611,7 @@ If success, 200 with the list of activities, for example:
   "activities": [
     {
       "action": "reply",
-      "from": "yes_meo_chat@sl.local",
+      "from": "yes_meo_chat@sl.lan",
       "timestamp": 1580903760,
       "to": "marketing@example.com",
       "reverse_alias": "\"marketing at example.com\" <reply@a.b>",
@@ -703,7 +706,7 @@ Return 200 and `existed=true` if contact is already added.
   "creation_timestamp": 1584186761,
   "last_email_sent_date": null,
   "last_email_sent_timestamp": null,
-  "reverse_alias": "First Last first@example.com <ra+qytyzjhrumrreuszrbjxqjlkh@sl.local>",
+  "reverse_alias": "First Last first@example.com <ra+qytyzjhrumrreuszrbjxqjlkh@sl.lan>",
   "reverse_alias_address": "reply+bzvpazcdedcgcpztehxzgjgzmxskqa@sl.co",
   "existed": false
 }
@@ -992,7 +995,7 @@ Return user setting.
 {
   "alias_generator": "word",
   "notification": true,
-  "random_alias_default_domain": "sl.local",
+  "random_alias_default_domain": "sl.lan",
   "sender_format": "AT",
   "random_alias_suffix": "random_string"
 }
@@ -1029,7 +1032,7 @@ Return domains that user can use to create random alias
     "is_custom": false
   },
   {
-    "domain": "sl.local",
+    "domain": "sl.lan",
     "is_custom": false
   },
   {

@@ -1,9 +1,19 @@
 import arrow
-from app import config
+
+from app.alias_delete import move_alias_to_trash
+from app.constants import JobType
 from app.db import Session
-from app.models import User, Job, PartnerSubscription, PartnerUser, ManualSubscription
-from app.proton.utils import get_proton_partner
-from tests.utils import random_email, random_token
+from app.models import (
+    User,
+    Job,
+    PartnerSubscription,
+    PartnerUser,
+    ManualSubscription,
+    UserAliasDeleteAction,
+    Alias,
+)
+from app.proton.proton_partner import get_proton_partner
+from tests.utils import random_email, random_token, create_new_user
 
 
 def test_create_from_partner(flask_client):
@@ -16,7 +26,7 @@ def test_create_from_partner(flask_client):
     assert user.newsletter_alias_id is None
     job = Session.query(Job).order_by(Job.id.desc()).first()
     assert job is not None
-    assert job.name == config.JOB_SEND_PROTON_WELCOME_1
+    assert job.name == JobType.SEND_PROTON_WELCOME_1.value
     assert job.payload.get("user_id") == user.id
 
 
@@ -46,3 +56,16 @@ def test_user_is_premium(flask_client):
     ManualSubscription.create(user_id=user.id, end_at=ps.end_at)
     assert user.is_premium()
     assert user.is_premium(include_partner_subscription=False)
+
+
+def test_user_can_create_alias_does_not_count_trashed_ones():
+    user = create_new_user(alias_delete_action=UserAliasDeleteAction.MoveToTrash)
+
+    aliases = []
+    while user.can_create_new_alias():
+        aliases.append(Alias.create_new_random(user))
+
+    assert user.can_create_new_alias() is False
+
+    move_alias_to_trash(aliases[0], user, commit=True)
+    assert user.can_create_new_alias() is True

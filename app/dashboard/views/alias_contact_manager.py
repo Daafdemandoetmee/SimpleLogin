@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from operator import or_
+from typing import Optional
 
 from flask import render_template, request, redirect, flash
 from flask import url_for
@@ -9,13 +10,11 @@ from sqlalchemy import and_, func, case
 from wtforms import StringField, validators, ValidationError
 
 # Need to import directly from config to allow modification from the tests
-from app import config, parallel_limiter
+from app import config, parallel_limiter, contact_utils
+from app.alias_audit_log_utils import emit_alias_audit_log, AliasAuditLogAction
+from app.contact_utils import ContactCreateError
 from app.dashboard.base import dashboard_bp
 from app.db import Session
-from app.email_utils import (
-    generate_reply_email,
-    parse_full_address,
-)
 from app.email_validation import is_valid_email
 from app.errors import (
     CannotCreateContactForReverseAlias,
@@ -24,8 +23,8 @@ from app.errors import (
     ErrContactAlreadyExists,
 )
 from app.log import LOG
-from app.models import Alias, Contact, EmailLog, User
-from app.utils import sanitize_email, CSRFValidationForm
+from app.models import Alias, Contact, EmailLog
+from app.utils import CSRFValidationForm
 
 
 def email_validator():
@@ -51,7 +50,7 @@ def email_validator():
     return _check
 
 
-def create_contact(user: User, alias: Alias, contact_address: str) -> Contact:
+def create_contact(alias: Alias, contact_address: str) -> Contact:
     """
     Create a contact for a user. Can be restricted for new free users by enabling DISABLE_CREATE_CONTACTS_FOR_FREE_USERS.
     Can throw exceptions:
@@ -61,37 +60,23 @@ def create_contact(user: User, alias: Alias, contact_address: str) -> Contact:
     """
     if not contact_address:
         raise ErrAddressInvalid("Empty address")
-    try:
-        contact_name, contact_email = parse_full_address(contact_address)
-    except ValueError:
+    output = contact_utils.create_contact(email=contact_address, alias=alias)
+    if output.error == ContactCreateError.InvalidEmail:
         raise ErrAddressInvalid(contact_address)
-
-    contact_email = sanitize_email(contact_email)
-    if not is_valid_email(contact_email):
-        raise ErrAddressInvalid(contact_email)
-
-    contact = Contact.get_by(alias_id=alias.id, website_email=contact_email)
-    if contact:
-        raise ErrContactAlreadyExists(contact)
-
-    if not user.can_create_contacts():
+    elif output.error == ContactCreateError.NotAllowed:
         raise ErrContactErrorUpgradeNeeded()
+    elif output.error is not None:
+        raise ErrAddressInvalid("Invalid address")
+    elif not output.created:
+        raise ErrContactAlreadyExists(output.contact)
 
-    contact = Contact.create(
-        user_id=alias.user_id,
-        alias_id=alias.id,
-        website_email=contact_email,
-        name=contact_name,
-        reply_email=generate_reply_email(contact_email, alias),
-    )
-
+    contact = output.contact
     LOG.d(
         "create reverse-alias for %s %s, reverse alias:%s",
         contact_address,
         alias,
         contact.reply_email,
     )
-    Session.commit()
 
     return contact
 
@@ -207,7 +192,7 @@ def get_contact_infos(
 
 
 def delete_contact(alias: Alias, contact_id: int):
-    contact = Contact.get(contact_id)
+    contact: Optional[Contact] = Contact.get(contact_id)
 
     if not contact:
         flash("Unknown error. Refresh the page", "warning")
@@ -215,6 +200,11 @@ def delete_contact(alias: Alias, contact_id: int):
         flash("You cannot delete reverse-alias", "warning")
     else:
         delete_contact_email = contact.website_email
+        emit_alias_audit_log(
+            alias=alias,
+            action=AliasAuditLogAction.DeleteContact,
+            message=f"Delete contact {contact_id} ({contact.email})",
+        )
         Contact.delete(contact_id)
         Session.commit()
 
@@ -237,7 +227,10 @@ def alias_contact_manager(alias_id):
 
     page = 0
     if request.args.get("page"):
-        page = int(request.args.get("page"))
+        try:
+            page = int(request.args.get("page"))
+        except ValueError:
+            pass
 
     query = request.args.get("query") or ""
 
@@ -261,7 +254,7 @@ def alias_contact_manager(alias_id):
             if new_contact_form.validate():
                 contact_address = new_contact_form.email.data.strip()
                 try:
-                    contact = create_contact(current_user, alias, contact_address)
+                    contact = create_contact(alias, contact_address)
                 except (
                     ErrContactErrorUpgradeNeeded,
                     ErrAddressInvalid,

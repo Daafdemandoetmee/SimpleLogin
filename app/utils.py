@@ -1,12 +1,11 @@
-import random
 import re
 import secrets
 import string
-import time
 import urllib.parse
 from functools import wraps
 from typing import List, Optional
 
+import time
 from flask_wtf import FlaskForm
 from unidecode import unidecode
 
@@ -32,8 +31,9 @@ def random_words(words: int = 2, numbers: int = 0):
     fields = [secrets.choice(_words) for i in range(words)]
 
     if numbers > 0:
-        digits = "".join([str(random.randint(0, 9)) for i in range(numbers)])
-        return "_".join(fields) + digits
+        digits = [n for n in range(10)]
+        suffix = "".join([str(secrets.choice(digits)) for i in range(numbers)])
+        return "_".join(fields) + suffix
     else:
         return "_".join(fields)
 
@@ -45,15 +45,6 @@ def random_string(length=10, include_digits=False):
         letters += string.digits
 
     return "".join(secrets.choice(letters) for _ in range(length))
-
-
-def convert_to_id(s: str):
-    """convert a string to id-like: remove space, remove special accent"""
-    s = s.lower()
-    s = unidecode(s)
-    s = s.replace(" ", "")
-
-    return s[:256]
 
 
 _ALLOWED_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
@@ -71,6 +62,15 @@ def convert_to_alphanumeric(s: str) -> str:
     return "".join(ret)
 
 
+def convert_to_id(s: str):
+    """convert a string to id-like: remove space, remove special accent"""
+    s = s.lower()
+    s = unidecode(s)
+    s = s.replace(" ", "")
+
+    return convert_to_alphanumeric(s)[:64]
+
+
 def encode_url(url):
     return urllib.parse.quote(url, safe="")
 
@@ -81,7 +81,13 @@ def canonicalize_email(email_address: str) -> str:
     if len(parts) != 2:
         return ""
     domain = parts[1]
-    if domain not in ("gmail.com", "protonmail.com", "proton.me", "pm.me"):
+    if domain not in (
+        "googlemail.com",
+        "gmail.com",
+        "protonmail.com",
+        "proton.me",
+        "pm.me",
+    ):
         return email_address
     first = parts[0]
     try:
@@ -135,6 +141,30 @@ def sanitize_scheme(scheme: Optional[str]) -> Optional[str]:
     if scheme_regex.match(scheme):
         return scheme
     return None
+
+
+# query string parameters that must never reach the logs in clear
+_SENSITIVE_QUERY_ARGS = {
+    "access_token",
+    "api_key",
+    "client_secret",
+    "code",
+    "password",
+    "refresh_token",
+    "token",
+}
+
+_REDACTED = "[redacted]"
+
+
+def redact_query_args(args) -> dict:
+    """Turn a request query string into a loggable dict, hiding secret values"""
+    return {
+        key: [_REDACTED] * len(values)
+        if key.lower() in _SENSITIVE_QUERY_ARGS
+        else values
+        for key, values in args.lists()
+    }
 
 
 def query2str(query):

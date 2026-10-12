@@ -1,10 +1,10 @@
 import csv
 
 import requests
+from email_validator import validate_email, EmailNotValidError
 
 from app import s3
 from app.db import Session
-from app.email_utils import get_email_domain_part
 from app.models import (
     Alias,
     AliasMailbox,
@@ -16,6 +16,7 @@ from app.models import (
     User,
 )
 from app.utils import sanitize_email, canonicalize_email
+from .alias_utils import check_alias_prefix
 from .log import LOG
 
 
@@ -38,7 +39,7 @@ def handle_batch_import(batch_import: BatchImport):
     import_from_csv(batch_import, user, lines)
 
 
-def import_from_csv(batch_import: BatchImport, user: User, lines):
+def import_from_csv(batch_import: BatchImport, user: User, lines: list[str]):
     reader = csv.DictReader(lines)
 
     for row in reader:
@@ -49,7 +50,19 @@ def import_from_csv(batch_import: BatchImport, user: User, lines):
             LOG.w("Cannot parse row %s", row)
             continue
 
-        alias_domain = get_email_domain_part(full_alias)
+        split_pos = full_alias.find("@")
+        alias_domain = full_alias[split_pos + 1 :]
+        alias_prefix = full_alias[:split_pos]
+        if not check_alias_prefix(alias_prefix):
+            LOG.w(f"Invalid alias prefix {alias_prefix}")
+            continue
+
+        try:
+            validate_email(full_alias, check_deliverability=False, allow_smtputf8=False)
+        except EmailNotValidError:
+            LOG.w(f"Invalid email {full_alias}")
+            continue
+
         custom_domain = CustomDomain.get_by(domain=alias_domain)
 
         if (
@@ -70,7 +83,7 @@ def import_from_csv(batch_import: BatchImport, user: User, lines):
 
         mailboxes = []
 
-        if "mailboxes" in row:
+        if "mailboxes" in row and row["mailboxes"]:
             for mailbox_email in row["mailboxes"].split():
                 mailbox_email = canonicalize_email(mailbox_email)
                 mailbox = Mailbox.get_by(email=mailbox_email)

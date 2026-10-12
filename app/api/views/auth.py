@@ -1,7 +1,6 @@
 import secrets
 import string
 
-import facebook
 import google.oauth2.credentials
 import googleapiclient.discovery
 from flask import jsonify, request
@@ -9,8 +8,14 @@ from flask_login import login_user
 from itsdangerous import Signer
 
 from app import email_utils
+from app.abuser_utils import check_if_abuser_email
 from app.api.base import api_bp
-from app.config import FLASK_SECRET, DISABLE_REGISTRATION
+from app.config import (
+    FLASK_SECRET,
+    DISABLE_REGISTRATION,
+    google_enabled,
+    facebook_enabled,
+)
 from app.dashboard.views.account_setting import send_reset_password_email
 from app.db import Session
 from app.email_utils import (
@@ -22,7 +27,8 @@ from app.email_utils import (
 from app.events.auth_event import LoginEvent, RegisterEvent
 from app.extensions import limiter
 from app.log import LOG
-from app.models import User, ApiKey, SocialAuth, AccountActivation
+from app.models import User, ApiKey, SocialAuth, AccountActivation, PasswordOracle
+from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
 from app.utils import sanitize_email, canonicalize_email
 
 
@@ -52,12 +58,23 @@ def auth_login():
     password = data.get("password")
     device = data.get("device")
 
-    email = sanitize_email(data.get("email"))
-    canonical_email = canonicalize_email(data.get("email"))
+    email = data.get("email")
+    if not email:
+        LoginEvent(LoginEvent.ActionType.failed, LoginEvent.Source.api).send()
+        return jsonify(error="Email or password incorrect"), 400
+    email = sanitize_email(email)
+    canonical_email = canonicalize_email(email)
 
     user = User.get_by(email=email) or User.get_by(email=canonical_email)
 
     if not user or not user.check_password(password):
+        if not user:
+            # Do the hash to avoid timing attacks nevertheless
+            dummy_pw = PasswordOracle()
+            dummy_pw.password = (
+                "$2b$12$ZWqpL73h4rGNfLkJohAFAu0isqSw/bX9p/tzpbWRz/To5FAftaW8u"
+            )
+            dummy_pw.check_password(password)
         LoginEvent(LoginEvent.ActionType.failed, LoginEvent.Source.api).send()
         return jsonify(error="Email or password incorrect"), 400
     elif user.disabled:
@@ -109,6 +126,12 @@ def auth_register():
         ).send()
         return jsonify(error=f"cannot use {email} as personal inbox"), 400
 
+    if check_if_abuser_email(email):
+        LOG.warn(
+            f"User with email {email} that was marked as abuser tried to register again"
+        )
+        return jsonify(error=f"cannot use {email} as it was previously banned"), 400
+
     if not password or len(password) < 8:
         RegisterEvent(RegisterEvent.ActionType.failed, RegisterEvent.Source.api).send()
         return jsonify(error="password too short"), 400
@@ -129,8 +152,8 @@ def auth_register():
     send_email(
         email,
         "Just one more step to join SimpleLogin",
-        render("transactional/code-activation.txt.jinja2", code=code),
-        render("transactional/code-activation.html", code=code),
+        render("transactional/code-activation.txt.jinja2", user=user, code=code),
+        render("transactional/code-activation.html", user=user, code=code),
     )
 
     RegisterEvent(RegisterEvent.ActionType.success, RegisterEvent.Source.api).send()
@@ -183,6 +206,11 @@ def auth_activate():
 
     LOG.d("activate user %s", user)
     user.activated = True
+    emit_user_audit_log(
+        user=user,
+        action=UserAuditLogAction.ActivateUser,
+        message=f"User has been activated: {user.email}",
+    )
     AccountActivation.delete(account_activation.id)
     Session.commit()
 
@@ -213,6 +241,9 @@ def auth_reactivate():
     if not user or user.activated:
         return jsonify(error="Something went wrong"), 400
 
+    if not user.can_send_or_receive():
+        return jsonify(error="User is disabled"), 400
+
     account_activation = AccountActivation.get_by(user_id=user.id)
     if account_activation:
         AccountActivation.delete(account_activation.id)
@@ -226,8 +257,8 @@ def auth_reactivate():
     send_email(
         email,
         "Just one more step to join SimpleLogin",
-        render("transactional/code-activation.txt.jinja2", code=code),
-        render("transactional/code-activation.html", code=code),
+        render("transactional/code-activation.txt.jinja2", user=user, code=code),
+        render("transactional/code-activation.html", user=user, code=code),
     )
 
     return jsonify(msg="User needs to confirm their account"), 200
@@ -251,6 +282,11 @@ def auth_facebook():
         }
 
     """
+    if not facebook_enabled():
+        return jsonify(error="invalid login mechanism"), 400
+
+    import facebook
+
     data = request.get_json()
     if not data:
         return jsonify(error="request body cannot be empty"), 400
@@ -302,6 +338,9 @@ def auth_google():
         }
 
     """
+    if not google_enabled():
+        return jsonify(error="invalid login mechanism"), 400
+
     data = request.get_json()
     if not data:
         return jsonify(error="request body cannot be empty"), 400

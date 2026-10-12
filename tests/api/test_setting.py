@@ -15,7 +15,7 @@ def test_get_setting(flask_client):
     assert r.json == {
         "alias_generator": "word",
         "notification": True,
-        "random_alias_default_domain": "sl.local",
+        "random_alias_default_domain": "sl.lan",
         "sender_format": "AT",
         "random_alias_suffix": "word",
     }
@@ -44,7 +44,14 @@ def test_update_settings_alias_generator(flask_client):
 
 def test_update_settings_random_alias_default_domain(flask_client):
     user = login(flask_client)
-    assert user.default_random_alias_domain() == "sl.local"
+    custom_domain = CustomDomain.create(
+        domain=random_domain(),
+        verified=True,
+        ownership_verified=True,
+        user_id=user.id,
+        flush=True,
+    )
+    assert user.default_random_alias_domain() == "sl.lan"
 
     r = flask_client.patch(
         "/api/setting", json={"random_alias_default_domain": "invalid"}
@@ -52,10 +59,33 @@ def test_update_settings_random_alias_default_domain(flask_client):
     assert r.status_code == 400
 
     r = flask_client.patch(
-        "/api/setting", json={"random_alias_default_domain": "d1.test"}
+        "/api/setting", json={"random_alias_default_domain": "d1.lan"}
     )
     assert r.status_code == 200
-    assert user.default_random_alias_domain() == "d1.test"
+    assert user.default_random_alias_domain() == "d1.lan"
+
+    r = flask_client.patch(
+        "/api/setting", json={"random_alias_default_domain": custom_domain.domain}
+    )
+    assert r.status_code == 200
+    assert user.default_random_alias_domain() == custom_domain.domain
+
+
+def test_update_settings_random_alias_default_domain_without_ownership(flask_client):
+    user = login(flask_client)
+    custom_domain = CustomDomain.create(
+        domain=random_domain(),
+        verified=True,
+        ownership_verified=False,
+        user_id=user.id,
+        flush=True,
+    )
+
+    r = flask_client.patch(
+        "/api/setting", json={"random_alias_default_domain": custom_domain.domain}
+    )
+    assert r.status_code == 400
+    assert user.default_alias_custom_domain_id is None
 
 
 def test_update_settings_sender_format(flask_client):

@@ -1,17 +1,18 @@
 """
 Allow user to disable an alias or block a contact via the one click unsubscribe
 """
-
-from app.db import Session
-
-
 from flask import redirect, url_for, flash, request, render_template
 from flask_login import login_required, current_user
 
+from app import alias_utils
+from app.contact_utils import contact_toggle_block
 from app.dashboard.base import dashboard_bp
+from app.db import Session
+from app.email import headers
 from app.handler.unsubscribe_encoder import UnsubscribeAction
 from app.handler.unsubscribe_handler import UnsubscribeHandler
 from app.models import Alias, Contact
+from app.utils import CSRFValidationForm
 
 
 @dashboard_bp.route("/unsubscribe/<int:alias_id>", methods=["GET", "POST"])
@@ -29,15 +30,28 @@ def unsubscribe(alias_id):
         )
         return redirect(url_for("dashboard.index"))
 
+    csrf_form = CSRFValidationForm()
+
     # automatic unsubscribe, according to https://tools.ietf.org/html/rfc8058
     if request.method == "POST":
-        alias.enabled = False
+        # Either comes from the get page or directly from the email one-click header request
+        if (
+            not csrf_form.validate()
+            and request.headers.get(headers.LIST_UNSUBSCRIBE_POST) != "One-Click"
+        ):
+            flash("Invalid request", "warning")
+            return redirect(request.url)
+        alias_utils.change_alias_status(
+            alias, enabled=False, message="Set enabled=False from unsubscribe request"
+        )
         flash(f"Alias {alias.email} has been blocked", "success")
         Session.commit()
 
         return redirect(url_for("dashboard.index", highlight_alias_id=alias.id))
     else:  # ask user confirmation
-        return render_template("dashboard/unsubscribe.html", alias=alias.email)
+        return render_template(
+            "dashboard/unsubscribe.html", alias=alias.email, csrf_form=csrf_form
+        )
 
 
 @dashboard_bp.route("/block_contact/<int:contact_id>", methods=["GET", "POST"])
@@ -55,11 +69,18 @@ def block_contact(contact_id):
         )
         return redirect(url_for("dashboard.index"))
 
+    csrf_form = CSRFValidationForm()
+
     # automatic unsubscribe, according to https://tools.ietf.org/html/rfc8058
     if request.method == "POST":
-        contact.block_forward = True
-        flash(f"Emails sent from {contact.website_email} are now blocked", "success")
-        Session.commit()
+        if not csrf_form.validate():
+            flash("Invalid request", "warning")
+            return redirect(request.url)
+        if contact.block_forward is False:
+            contact_toggle_block(contact)
+            flash(
+                f"Emails sent from {contact.website_email} are now blocked", "success"
+            )
 
         return redirect(
             url_for(
@@ -69,7 +90,9 @@ def block_contact(contact_id):
             )
         )
     else:  # ask user confirmation
-        return render_template("dashboard/block_contact.html", contact=contact)
+        return render_template(
+            "dashboard/block_contact.html", contact=contact, csrf_form=csrf_form
+        )
 
 
 @dashboard_bp.route("/unsubscribe/encoded/<encoded_request>", methods=["GET"])

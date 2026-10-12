@@ -6,12 +6,14 @@ from typing import Optional
 from flask import jsonify, g, request, make_response
 
 from app import s3, config
-from app.api.base import api_bp, require_api_auth
+from app.api.base import api_bp, require_api_auth, require_api_sudo
 from app.config import SESSION_COOKIE_NAME
+from app.dashboard.views.api_key import clean_up_unused_or_old_api_keys
 from app.dashboard.views.index import get_stats
 from app.db import Session
+from app.image_validation import detect_image_format, ImageFormat
 from app.models import ApiKey, File, PartnerUser, User
-from app.proton.utils import get_proton_partner
+from app.proton.proton_partner import get_proton_partner
 from app.session import logout_session
 from app.utils import random_string
 
@@ -30,6 +32,7 @@ def user_to_dict(user: User) -> dict:
         "is_premium": user.is_premium(),
         "email": user.email,
         "in_trial": user.in_trial(),
+        "trial_end_timestamp": user.trial_end.timestamp if user.trial_end else None,
         "max_alias_free_plan": user.max_alias_for_free_account(),
         "connected_proton_address": None,
         "can_create_reverse_alias": user.can_create_contacts(),
@@ -78,17 +81,18 @@ def update_user_info():
     data = request.get_json() or {}
 
     if "profile_picture" in data:
-        if data["profile_picture"] is None:
-            if user.profile_picture_id:
-                file = user.profile_picture
-                user.profile_picture_id = None
+        if user.profile_picture_id:
+            file = user.profile_picture
+            user.profile_picture_id = None
+            Session.flush()
+            if file:
+                File.delete(file.id)
+                s3.delete(file.path)
                 Session.flush()
-                if file:
-                    File.delete(file.id)
-                    s3.delete(file.path)
-                    Session.flush()
-        else:
+        if data["profile_picture"] is not None:
             raw_data = base64.decodebytes(data["profile_picture"].encode())
+            if detect_image_format(raw_data) == ImageFormat.Unknown:
+                return jsonify(error="Unsupported image format"), 400
             file_path = random_string(30)
             file = File.create(user_id=user.id, path=file_path)
             Session.flush()
@@ -105,7 +109,7 @@ def update_user_info():
 
 
 @api_bp.route("/api_key", methods=["POST"])
-@require_api_auth
+@require_api_sudo
 def create_api_key():
     """Used to create a new api key
     Input:
@@ -119,7 +123,7 @@ def create_api_key():
         return jsonify(error="request body cannot be empty"), 400
 
     device = data.get("device")
-
+    clean_up_unused_or_old_api_keys(g.user.id)
     api_key = ApiKey.create(user_id=g.user.id, name=device)
     Session.commit()
 

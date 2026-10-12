@@ -5,7 +5,7 @@ from app.models import Mailbox
 from tests.utils import login
 
 
-def test_create_mailbox(flask_client):
+def test_create_mailbox_valid(flask_client):
     login(flask_client)
 
     r = flask_client.post(
@@ -21,14 +21,38 @@ def test_create_mailbox(flask_client):
     assert r.json["default"] is False
     assert r.json["nb_alias"] == 0
 
-    # invalid email address
+
+def test_create_mailbox_invalid_email(flask_client):
+    login(flask_client)
     r = flask_client.post(
         "/api/mailboxes",
-        json={"email": "gmail.com"},
+        json={"email": "gmail.com"},  # not an email address
     )
 
     assert r.status_code == 400
-    assert r.json == {"error": "gmail.com invalid"}
+    assert r.json == {"error": "Invalid email"}
+
+
+def test_create_mailbox_empty_payload(flask_client):
+    login(flask_client)
+    r = flask_client.post(
+        "/api/mailboxes",
+        json={},
+    )
+
+    assert r.status_code == 400
+    assert r.json == {"error": "Invalid email"}
+
+
+def test_create_mailbox_empty_email(flask_client):
+    login(flask_client)
+    r = flask_client.post(
+        "/api/mailboxes",
+        json={"email": ""},
+    )
+
+    assert r.status_code == 400
+    assert r.json == {"error": "Invalid email"}
 
 
 def test_create_mailbox_fail_for_free_user(flask_client):
@@ -42,7 +66,7 @@ def test_create_mailbox_fail_for_free_user(flask_client):
     )
 
     assert r.status_code == 400
-    assert r.json == {"error": "Only premium plan can add additional mailbox"}
+    assert r.json == {"error": "Only available for paid plans"}
 
 
 def test_delete_mailbox(flask_client):
@@ -189,3 +213,46 @@ def test_get_mailboxes_v2(flask_client):
         assert "creation_timestamp" in mb
         assert "nb_alias" in mb
         assert "verified" in mb
+
+
+def test_cannot_update_admin_disabled_mailbox(flask_client):
+    user = login(flask_client)
+
+    # create a mailbox
+    mb = Mailbox.create(user_id=user.id, email="mb@gmail.com", verified=True)
+    Session.commit()
+    # Admin-disable it
+    mb.flags = (mb.flags or 0) | Mailbox.FLAG_ADMIN_DISABLED
+    Session.commit()
+
+    # Try to set as default
+    r = flask_client.put(
+        f"/api/mailboxes/{mb.id}",
+        json={"default": True},
+    )
+    assert r.status_code == 400
+    assert "disabled" in r.json["error"].lower()
+
+    # Try to change email
+    r = flask_client.put(
+        f"/api/mailboxes/{mb.id}",
+        json={"email": "new@gmail.com"},
+    )
+    assert r.status_code == 400
+    assert "disabled" in r.json["error"].lower()
+
+
+def test_cannot_delete_admin_disabled_mailbox(flask_client):
+    user = login(flask_client)
+
+    # create a mailbox
+    mb = Mailbox.create(user_id=user.id, email="mb@gmail.com", verified=True)
+    Session.commit()
+    # Admin-disable it
+    mb.flags = (mb.flags or 0) | Mailbox.FLAG_ADMIN_DISABLED
+    Session.commit()
+
+    r = flask_client.delete(f"/api/mailboxes/{mb.id}")
+    assert r.status_code == 400
+    assert "disabled" in r.json["error"].lower()
+    assert "cannot be deleted" in r.json["error"].lower()

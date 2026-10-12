@@ -1,6 +1,7 @@
 import os
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import FileSystemLoader, select_autoescape
+from jinja2.sandbox import SandboxedEnvironment
 
 from app.config import ROOT_DIR, URL
 from app.email_utils import send_email
@@ -11,9 +12,14 @@ from app.models import NewsletterUser, Alias
 
 def send_newsletter_to_user(newsletter, user) -> (bool, str):
     """Return whether the newsletter is sent successfully and the error if not"""
+    if not user.can_send_or_receive():
+        return False, f"{user} not allowed to receive newsletter"
     try:
         templates_dir = os.path.join(ROOT_DIR, "templates", "emails")
-        env = Environment(loader=FileSystemLoader(templates_dir))
+        env = SandboxedEnvironment(
+            loader=FileSystemLoader(templates_dir),
+            autoescape=select_autoescape(["html"]),
+        )
         html_template = env.from_string(newsletter.html)
         text_template = env.from_string(newsletter.plain_text)
 
@@ -59,9 +65,11 @@ def send_newsletter_to_user(newsletter, user) -> (bool, str):
 
 def send_newsletter_to_address(newsletter, user, to_address) -> (bool, str):
     """Return whether the newsletter is sent successfully and the error if not"""
+    if not user.can_send_or_receive():
+        return False, f"{user} not allowed to receive newsletter"
     try:
         templates_dir = os.path.join(ROOT_DIR, "templates", "emails")
-        env = Environment(loader=FileSystemLoader(templates_dir))
+        env = SandboxedEnvironment(loader=FileSystemLoader(templates_dir))
         html_template = env.from_string(newsletter.html)
         text_template = env.from_string(newsletter.plain_text)
 

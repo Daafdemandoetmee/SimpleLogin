@@ -1,6 +1,6 @@
 import json
 import secrets
-from time import time
+import uuid
 
 import webauthn
 from flask import (
@@ -24,6 +24,7 @@ from app.db import Session
 from app.extensions import limiter
 from app.log import LOG
 from app.models import User, Fido, MfaBrowser
+from app.session import set_session_sudo_mode
 from app.utils import sanitize_next_url
 
 
@@ -61,6 +62,8 @@ def fido():
     if request.cookies.get("mfa"):
         browser = MfaBrowser.get_by(token=request.cookies.get("mfa"))
         if browser and not browser.is_expired() and browser.user_id == user.id:
+            # Rotate session ID to prevent session fixation
+            session.session_id = str(uuid.uuid4())
             login_user(user)
             flash("Welcome back!", "success")
             # Redirect user to correct page
@@ -104,11 +107,13 @@ def fido():
             g.deduct_limit = True
             auto_activate = False
         else:
-            user.fido_sign_count = new_sign_count
+            fido_key.sign_count = new_sign_count
             Session.commit()
             del session[MFA_USER_ID]
 
-            session["sudo_time"] = int(time())
+            set_session_sudo_mode(user.id)
+            # Rotate session ID to prevent session fixation
+            session.session_id = str(uuid.uuid4())
             login_user(user)
             flash("Welcome back!", "success")
 
@@ -155,13 +160,15 @@ def fido():
         webauthn_users, challenge
     )
     webauthn_assertion_options = webauthn_assertion_options.assertion_dict
-    try:
-        # HACK: We need to upgrade to webauthn > 1 so it can support specifying the transports
-        for credential in webauthn_assertion_options["allowCredentials"]:
-            del credential["transports"]
-    except KeyError:
-        # Should never happen but...
-        pass
+    # Inject stored transports per credential, falling back to removing the field
+    # if none are stored (keys registered before metadata collection).
+    fido_by_credential_id = {fido.credential_id: fido for fido in fidos}
+    for credential in webauthn_assertion_options.get("allowCredentials", []):
+        fido = fido_by_credential_id.get(credential.get("id"))
+        if fido and isinstance(fido.transports, list) and fido.transports:
+            credential["transports"] = fido.transports
+        else:
+            credential.pop("transports", None)
 
     return render_template(
         "auth/fido.html",

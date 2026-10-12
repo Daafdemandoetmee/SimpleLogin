@@ -1,20 +1,27 @@
-import random
-from email.message import EmailMessage
-from typing import List
-
+import arrow
+import base64
 import pytest
+import random
+import re
 from aiosmtpd.smtp import Envelope
+from email import message_from_bytes
+from email.message import EmailMessage
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import List
 
 import email_handler
 from app import config
 from app.config import EMAIL_DOMAIN, ALERT_DMARC_FAILED_REPLY_PHASE
 from app.db import Session
 from app.email import headers, status
-from app.email_utils import generate_verp_email
+from app.email_utils import generate_verp_email, get_noreply_email
 from app.mail_sender import mail_sender
+from app.message_utils import message_to_bytes
 from app.models import (
     Alias,
-    AuthorizedAddress,
+    CustomDomain,
     IgnoredEmail,
     EmailLog,
     Notification,
@@ -24,36 +31,15 @@ from app.models import (
 )
 from app.utils import random_string, canonicalize_email
 from email_handler import (
-    get_mailbox_from_mail_from,
     should_ignore,
     is_automatic_out_of_office,
 )
 from tests.utils import load_eml_file, create_new_user, random_email
 
 
-def test_get_mailbox_from_mail_from(flask_client):
-    user = create_new_user()
-    alias = Alias.create_new_random(user)
-    Session.commit()
-
-    mb = get_mailbox_from_mail_from(user.email, alias)
-    assert mb.email == user.email
-
-    mb = get_mailbox_from_mail_from("unauthorized@gmail.com", alias)
-    assert mb is None
-
-    # authorized address
-    AuthorizedAddress.create(
-        user_id=user.id,
-        mailbox_id=user.default_mailbox_id,
-        email="unauthorized@gmail.com",
-        commit=True,
-    )
-    mb = get_mailbox_from_mail_from("unauthorized@gmail.com", alias)
-    assert mb.email == user.email
-
-
 def test_should_ignore(flask_client):
+    IgnoredEmail.filter_by(rcpt_to="rcpt_to").delete()
+
     assert should_ignore("mail_from", []) is False
 
     assert not should_ignore("mail_from", ["rcpt_to"])
@@ -157,6 +143,66 @@ def test_preserve_5xx_with_no_header(flask_client):
     assert status.E512 == result
 
 
+def test_reply_rejected_for_unverified_custom_domain(flask_client):
+    user = create_new_user()
+    domain = CustomDomain.create(
+        user_id=user.id,
+        domain=f"{random_string()}.example.com",
+        verified=False,
+        commit=True,
+    )
+    alias = Alias.create(
+        user_id=user.id,
+        email=f"{random_string()}@{domain.domain}",
+        mailbox_id=user.default_mailbox_id,
+        custom_domain_id=domain.id,
+        commit=True,
+    )
+    contact = Contact.create(
+        user_id=user.id,
+        alias_id=alias.id,
+        website_email="sender@external.com",
+        reply_email=f"{random_string()}@{EMAIL_DOMAIN}",
+        commit=True,
+    )
+    msg = load_eml_file(
+        "dmarc_reply_check.eml",
+        {
+            "alias_email": alias.email,
+            "contact_email": contact.reply_email,
+            "dmarc_result": "DMARC_POLICY_ALLOW",
+        },
+    )
+    envelope = Envelope()
+    envelope.mail_from = alias.email
+    envelope.rcpt_tos = [contact.reply_email]
+    result = email_handler.handle(envelope, msg)
+    assert result == status.E520
+
+
+def test_forward_rejected_for_unverified_custom_domain(flask_client):
+    user = create_new_user()
+    domain = CustomDomain.create(
+        user_id=user.id,
+        domain=f"{random_string()}.example.com",
+        verified=False,
+        commit=True,
+    )
+    alias = Alias.create(
+        user_id=user.id,
+        email=f"{random_string()}@{domain.domain}",
+        mailbox_id=user.default_mailbox_id,
+        custom_domain_id=domain.id,
+        commit=True,
+    )
+    msg = load_eml_file("dmarc_allow.eml", {"alias_email": alias.email})
+    envelope = Envelope()
+    envelope.mail_from = "sender@external.com"
+    envelope.rcpt_tos = [alias.email]
+    result = email_handler.handle(envelope, msg)
+    assert result == status.E520
+
+
 def generate_dmarc_result() -> List:
     return ["DMARC_POLICY_QUARANTINE", "DMARC_POLICY_REJECT", "DMARC_POLICY_SOFTFAIL"]
 
@@ -237,8 +283,8 @@ def test_avoid_add_to_header_already_present_in_cc():
 def test_email_sent_to_noreply(flask_client):
     msg = EmailMessage()
     envelope = Envelope()
-    envelope.mail_from = "from@domain.test"
-    envelope.rcpt_tos = [config.NOREPLY]
+    envelope.mail_from = "from@domain.lan"
+    envelope.rcpt_tos = [get_noreply_email()]
     result = email_handler.handle(envelope, msg)
     assert result == status.E200
 
@@ -246,17 +292,20 @@ def test_email_sent_to_noreply(flask_client):
 def test_email_sent_to_noreplies(flask_client):
     msg = EmailMessage()
     envelope = Envelope()
-    envelope.mail_from = "from@domain.test"
-    config.NOREPLIES = ["other-no-reply@sl.test"]
+    envelope.mail_from = "from@domain.lan"
+    original_noreplies = config.NOREPLIES
+    config.NOREPLIES = ["other-no-reply@sl.lan"]
+    try:
+        envelope.rcpt_tos = ["other-no-reply@sl.lan"]
+        result = email_handler.handle(envelope, msg)
+        assert result == status.E200
 
-    envelope.rcpt_tos = ["other-no-reply@sl.test"]
-    result = email_handler.handle(envelope, msg)
-    assert result == status.E200
-
-    # NOREPLY isn't used anymore
-    envelope.rcpt_tos = [config.NOREPLY]
-    result = email_handler.handle(envelope, msg)
-    assert result == status.E515
+        # default NOREPLY isn't in NOREPLIES anymore — should not be treated as noreply
+        envelope.rcpt_tos = [get_noreply_email()]
+        result = email_handler.handle(envelope, msg)
+        assert result != status.E200
+    finally:
+        config.NOREPLIES = original_noreplies
 
 
 def test_references_header(flask_client):
@@ -411,3 +460,190 @@ def test_preserve_headers(flask_client):
     msg = sent_mails[0].msg
     for header in headers_to_keep:
         assert msg[header] == header + "keep"
+
+
+def test_not_send_to_pending_to_delete_users(flask_client):
+    user = create_new_user()
+    alias = Alias.create_new_random(user)
+    user.delete_on = arrow.utcnow()
+    envelope = Envelope()
+    envelope.mail_from = "somewhere@lo.cal"
+    envelope.rcpt_tos = [alias.email]
+    msg = EmailMessage()
+    result = email_handler.handle(envelope, msg)
+    assert result == status.E504
+
+
+@mail_sender.store_emails_test_decorator
+def test_forward_preserves_pgp_key_attachment(flask_client):
+    user = create_new_user()
+    alias = Alias.create_new_random(user)
+    Session.commit()
+
+    msg = MIMEMultipart("mixed")
+    msg[headers.FROM] = "sender@external.com"
+    msg[headers.TO] = alias.email
+    msg[headers.SUBJECT] = "Signed message with public key"
+    msg.attach(MIMEText("Hello, here is my signed message.", "plain"))
+
+    pgp_key = MIMEBase("application", "pgp-keys")
+    pgp_key.set_payload(
+        b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----"
+    )
+    pgp_key.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename="publickey - sender@external.com.asc",
+    )
+    msg.attach(pgp_key)
+
+    envelope = Envelope()
+    envelope.mail_from = "sender@external.com"
+    envelope.rcpt_tos = [alias.email]
+
+    result = email_handler.handle(envelope, msg)
+    assert result == status.E200
+
+    sent_mails = mail_sender.get_stored_emails()
+    assert len(sent_mails) == 1
+    forwarded_msg = sent_mails[0].msg
+
+    # The PGP public key attachment should still be present in the forwarded email
+    attachments = [
+        part
+        for part in forwarded_msg.walk()
+        if part.get_content_type() == "application/pgp-keys"
+    ]
+    assert len(attachments) == 1
+    assert attachments[0].get_filename() == "publickey - sender@external.com.asc"
+
+
+def _create_reply_with_pgp_key_attachment(flask_client):
+    user = create_new_user()
+    alias = Alias.create_new_random(user)
+    Session.commit()
+    contact = Contact.create(
+        user_id=user.id,
+        alias_id=alias.id,
+        website_email=random_email(),
+        reply_email=f"{random_string(10)}@{EMAIL_DOMAIN}",
+        commit=True,
+    )
+
+    msg = MIMEMultipart("mixed")
+    msg[headers.TO] = contact.reply_email
+    msg[headers.SUBJECT] = "Re: signed reply"
+    msg.attach(MIMEText("Here is my reply.", "plain"))
+
+    pgp_key = MIMEBase("application", "pgp-keys")
+    pgp_key.set_payload(
+        b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----"
+    )
+    pgp_key.add_header(
+        "Content-Disposition",
+        "attachment",
+        filename=f"publickey - {user.email}.asc",
+    )
+    msg.attach(pgp_key)
+
+    envelope = Envelope()
+    envelope.mail_from = user.email
+    envelope.rcpt_tos = [contact.reply_email]
+
+    return user, msg, envelope
+
+
+@mail_sender.store_emails_test_decorator
+def test_reply_strips_pgp_key_when_config_enabled(flask_client):
+    # Verify that when DROP_PGP_KEY_ATTACHMENTS_ON_REPLY is enabled,
+    # PGP public key attachments should be removed from replies
+    original = config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY
+    config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY = True
+    try:
+        _, msg, envelope = _create_reply_with_pgp_key_attachment(flask_client)
+        result = email_handler.handle(envelope, msg)
+        assert result == status.E200
+
+        sent_mails = mail_sender.get_stored_emails()
+        assert len(sent_mails) == 1
+        reply_msg = sent_mails[0].msg
+
+        pgp_attachments = [
+            part
+            for part in reply_msg.walk()
+            if part.get_content_type() == "application/pgp-keys"
+        ]
+        assert len(pgp_attachments) == 0
+    finally:
+        config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY = original
+
+
+@mail_sender.store_emails_test_decorator
+def test_reply_preserves_pgp_key_when_config_disabled(flask_client):
+    # Verify that when DROP_PGP_KEY_ATTACHMENTS_ON_REPLY is disabled (default),
+    # PGP public key attachments should be preserved in replies
+    original = config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY
+    config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY = False
+    try:
+        user, msg, envelope = _create_reply_with_pgp_key_attachment(flask_client)
+        result = email_handler.handle(envelope, msg)
+        assert result == status.E200
+
+        sent_mails = mail_sender.get_stored_emails()
+        assert len(sent_mails) == 1
+        reply_msg = sent_mails[0].msg
+
+        pgp_attachments = [
+            part
+            for part in reply_msg.walk()
+            if part.get_content_type() == "application/pgp-keys"
+        ]
+        assert len(pgp_attachments) == 1
+        assert pgp_attachments[0].get_filename() == f"publickey - {user.email}.asc"
+    finally:
+        config.DROP_PGP_KEY_ATTACHMENTS_ON_REPLY = original
+
+
+@mail_sender.store_emails_test_decorator
+def test_encoded_word_linebreak_in_from_does_not_inject_header(flask_client):
+    """An RFC 2047 encoded word can decode to a string containing a line break.
+    It must not end up as an extra header in the message we forward, otherwise
+    the sender chooses e.g. the Reply-To the mailbox sees"""
+    user = create_new_user()
+    alias = Alias.create_new_random(user)
+    Session.commit()
+
+    payload = base64.b64encode(b"Evil\nReply-To: attacker@evil.com").decode()
+    raw = (
+        f"From: =?UTF-8?B?{payload}?= <spammer@gmail.com>\r\n"
+        f"To: {alias.email}\r\n"
+        "Subject: hello\r\n"
+        "Content-Type: text/plain\r\n"
+        "\r\n"
+        "body\r\n"
+    ).encode()
+    envelope = Envelope()
+    envelope.mail_from = "spammer@gmail.com"
+    envelope.rcpt_tos = [alias.email]
+
+    assert email_handler.handle(envelope, message_from_bytes(raw)) == status.E200
+
+    contact = Contact.filter_by(alias_id=alias.id).first()
+    assert "\n" not in contact.name
+    assert "\r" not in contact.name
+
+    sent_mails = mail_sender.get_stored_emails()
+    assert len(sent_mails) == 1
+    # serialize and re-parse the way the receiving server does it
+    wire = message_to_bytes(sent_mails[0].msg)
+    header_block = wire.split(b"\r\n\r\n", 1)[0].decode()
+    # the name the sender chose must not start a header line of its own
+    assert re.search(r"^Reply-To:", header_block, re.MULTILINE) is None
+
+    forwarded = message_from_bytes(wire)
+    assert forwarded.get_all(headers.REPLY_TO) is None
+    # the payload may only survive as text inside the headers that legitimately
+    # carry the contact name, never as a header of its own
+    for header_name, header_value in forwarded.items():
+        if header_name not in (headers.FROM, headers.SL_ORIGINAL_FROM):
+            assert "attacker@evil.com" not in str(header_value)

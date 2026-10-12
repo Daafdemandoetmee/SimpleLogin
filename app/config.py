@@ -3,7 +3,8 @@ import random
 import socket
 import string
 from ast import literal_eval
-from typing import Callable, List
+from email.utils import parseaddr as _parseaddr
+from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -35,6 +36,44 @@ def sl_getenv(env_var: str, default_factory: Callable = None):
     return literal_eval(value)
 
 
+def get_env_dict(env_var: str) -> dict[str, str]:
+    """
+    Get an env variable and convert it into a python dictionary with keys and values as strings.
+    Args:
+        env_var (str): env var, example: SL_DB
+
+    Syntax is: key1=value1;key2=value2
+    Components separated by ;
+    key and value separated by =
+    """
+    value = os.getenv(env_var)
+    if not value:
+        return {}
+
+    components = value.split(";")
+    result = {}
+    for component in components:
+        if component == "":
+            continue
+        parts = component.split("=")
+        if len(parts) != 2:
+            raise Exception(f"Invalid config for env var {env_var}")
+        result[parts[0].strip()] = parts[1].strip()
+
+    return result
+
+
+def get_env_csv(env_var: str, default: Optional[str]) -> list[str]:
+    """
+    Get an env variable and convert it into a list of strings separated by,
+    Syntax is: val1,val2
+    """
+    value = os.getenv(env_var, default)
+    if not value:
+        return []
+    return [field.strip() for field in value.split(",") if field.strip()]
+
+
 config_file = os.environ.get("CONFIG")
 if config_file:
     config_file = get_abs_path(config_file)
@@ -56,6 +95,7 @@ print(">>> URL:", URL)
 RP_ID = urlparse(URL).hostname
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
+SENTRY_TRACE_RATE = float(os.environ.get("SENTRY_TRACE_RATE", "0.001"))
 
 # can use another sentry project for the front-end to avoid noises
 SENTRY_FRONT_END_DSN = os.environ.get("SENTRY_FRONT_END_DSN") or SENTRY_DSN
@@ -105,8 +145,8 @@ MAX_NB_SUBDOMAIN = 5
 ENFORCE_SPF = "ENFORCE_SPF" in os.environ
 
 # override postfix server locally
-# use 240.0.0.1 here instead of 10.0.0.1 as existing SL instances use the 240.0.0.0 network
-POSTFIX_SERVER = os.environ.get("POSTFIX_SERVER", "240.0.0.1")
+POSTFIX_SERVERS = get_env_csv("POSTFIX_SERVER", "240.0.0.1")
+POSTFIX_BACKUP_SERVERS = get_env_csv("POSTFIX_BACKUP_SERVERS", "")
 
 DISABLE_REGISTRATION = "DISABLE_REGISTRATION" in os.environ
 
@@ -120,7 +160,8 @@ if POSTFIX_SUBMISSION_TLS:
 else:
     default_postfix_port = 25
 POSTFIX_PORT = int(os.environ.get("POSTFIX_PORT", default_postfix_port))
-POSTFIX_TIMEOUT = os.environ.get("POSTFIX_TIMEOUT", 3)
+POSTFIX_TIMEOUT = int(os.environ.get("POSTFIX_TIMEOUT", 3))
+POSTFIX_CONNECT_TIMEOUT = float(os.environ.get("POSTFIX_CONNECT_TIMEOUT", 1))
 
 # ["domain1.com", "domain2.com"]
 OTHER_ALIAS_DOMAINS = sl_getenv("OTHER_ALIAS_DOMAINS", list)
@@ -144,11 +185,22 @@ FIRST_ALIAS_DOMAIN = os.environ.get("FIRST_ALIAS_DOMAIN") or EMAIL_DOMAIN
 # e.g. [(10, "mx1.hostname."), (10, "mx2.hostname.")]
 EMAIL_SERVERS_WITH_PRIORITY = sl_getenv("EMAIL_SERVERS_WITH_PRIORITY")
 
+PROTON_MX_SERVERS = get_env_csv(
+    "PROTON_MX_SERVERS", "mail.protonmail.ch., mailsec.protonmail.ch."
+)
+
+PROTON_EMAIL_DOMAINS = get_env_csv(
+    "PROTON_EMAIL_DOMAINS", "proton.me, protonmail.com, protonmail.ch, proton.ch, pm.me"
+)
+
 # disable the alias suffix, i.e. the ".random_word" part
 DISABLE_ALIAS_SUFFIX = "DISABLE_ALIAS_SUFFIX" in os.environ
 
 # the email address that receives all unsubscription request
 UNSUBSCRIBER = os.environ.get("UNSUBSCRIBER")
+USERS_WITH_HTTP_UNSUBSCRIBE = [
+    int(uid) for uid in get_env_csv("USERS_WITH_HTTP_UNSUBSCRIBE", "")
+]
 
 # due to a typo, both UNSUBSCRIBER and OLD_UNSUBSCRIBER are supported
 OLD_UNSUBSCRIBER = os.environ.get("OLD_UNSUBSCRIBER")
@@ -173,6 +225,7 @@ SESSION_COOKIE_NAME = "slapp"
 MAILBOX_SECRET = FLASK_SECRET + "mailbox"
 CUSTOM_ALIAS_SECRET = FLASK_SECRET + "custom_alias"
 UNSUBSCRIBE_SECRET = FLASK_SECRET + "unsub"
+PADDLE_PASSTHROUGH_SECRET = FLASK_SECRET + "paddle_passthrough"
 
 # AWS
 AWS_REGION = os.environ.get("AWS_REGION") or "eu-west-3"
@@ -204,6 +257,9 @@ PADDLE_PUBLIC_KEY_PATH = get_abs_path(
 )
 
 PADDLE_AUTH_CODE = os.environ.get("PADDLE_AUTH_CODE")
+
+# Transition flag:
+PADDLE_ALLOW_UNSIGNED_PASSTHROUGH = "PADDLE_ALLOW_UNSIGNED_PASSTHROUGH" in os.environ
 
 PADDLE_COUPON_ID = os.environ.get("PADDLE_COUPON_ID")
 
@@ -241,16 +297,24 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
+
+def google_enabled():
+    return GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+
+
 FACEBOOK_CLIENT_ID = os.environ.get("FACEBOOK_CLIENT_ID")
 FACEBOOK_CLIENT_SECRET = os.environ.get("FACEBOOK_CLIENT_SECRET")
 
+
+def facebook_enabled():
+    return FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET
+
+
 CONNECT_WITH_OIDC_ICON = os.environ.get("CONNECT_WITH_OIDC_ICON")
-OIDC_AUTHORIZATION_URL = os.environ.get("OIDC_AUTHORIZATION_URL")
-OIDC_USER_INFO_URL = os.environ.get("OIDC_USER_INFO_URL")
-OIDC_TOKEN_URL = os.environ.get("OIDC_TOKEN_URL")
+OIDC_WELL_KNOWN_URL = os.environ.get("OIDC_WELL_KNOWN_URL")
 OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID")
 OIDC_CLIENT_SECRET = os.environ.get("OIDC_CLIENT_SECRET")
-OIDC_SCOPES = os.environ.get("OIDC_SCOPES")
+OIDC_SCOPES = os.environ.get("OIDC_SCOPES", "openid email profile").split()
 OIDC_NAME_FIELD = os.environ.get("OIDC_NAME_FIELD", "name")
 
 PROTON_CLIENT_ID = os.environ.get("PROTON_CLIENT_ID")
@@ -259,6 +323,9 @@ PROTON_BASE_URL = os.environ.get(
     "PROTON_BASE_URL", "https://account.protonmail.com/api"
 )
 PROTON_VALIDATE_CERTS = "PROTON_VALIDATE_CERTS" in os.environ
+PROTON_PREVENT_CHANGE_LINKED_ACCOUNT = (
+    "PROTON_PREVENT_CHANGE_LINKED_ACCOUNT" in os.environ
+)
 CONNECT_WITH_PROTON = "CONNECT_WITH_PROTON" in os.environ
 PROTON_EXTRA_HEADER_NAME = os.environ.get("PROTON_EXTRA_HEADER_NAME")
 PROTON_EXTRA_HEADER_VALUE = os.environ.get("PROTON_EXTRA_HEADER_VALUE")
@@ -271,18 +338,6 @@ MFA_USER_ID = "mfa_user_id"
 
 FLASK_PROFILER_PATH = os.environ.get("FLASK_PROFILER_PATH")
 FLASK_PROFILER_PASSWORD = os.environ.get("FLASK_PROFILER_PASSWORD")
-
-# Job names
-JOB_ONBOARDING_1 = "onboarding-1"
-JOB_ONBOARDING_2 = "onboarding-2"
-JOB_ONBOARDING_3 = "onboarding-3"
-JOB_ONBOARDING_4 = "onboarding-4"
-JOB_BATCH_IMPORT = "batch-import"
-JOB_DELETE_ACCOUNT = "delete-account"
-JOB_DELETE_MAILBOX = "delete-mailbox"
-JOB_DELETE_DOMAIN = "delete-domain"
-JOB_SEND_USER_REPORT = "send-user-report"
-JOB_SEND_PROTON_WELCOME_1 = "proton-welcome-1"
 
 # for pagination
 PAGE_LIMIT = 20
@@ -317,6 +372,8 @@ LOAD_PGP_EMAIL_HANDLER = "LOAD_PGP_EMAIL_HANDLER" in os.environ
 APPLE_API_SECRET = os.environ.get("APPLE_API_SECRET")
 # for Mac App
 MACAPP_APPLE_API_SECRET = os.environ.get("MACAPP_APPLE_API_SECRET")
+# When enabled, /apple/update_notification validates the shared secret in the webhook payload
+APPLE_WEBHOOK_SECRET_CHECK_ENABLED = "APPLE_WEBHOOK_SECRET_CHECK_ENABLED" in os.environ
 
 # <<<<< ALERT EMAIL >>>>
 
@@ -406,18 +463,16 @@ if PGP_SENDER_PRIVATE_KEY_PATH:
 PGP_SIGNER = os.environ.get("PGP_SIGNER")
 
 # emails that have empty From address is sent from this special reverse-alias
-NOREPLY = os.environ.get("NOREPLY", f"noreply@{EMAIL_DOMAIN}")
+NOREPLY = os.environ.get("NOREPLY", f'"SimpleLogin (noreply)" <noreply@{EMAIL_DOMAIN}>')
+PARTNER_NOREPLY = os.environ.get("PARTNER_NOREPLY", NOREPLY)
 
-# list of no reply addresses
-NOREPLIES = sl_getenv("NOREPLIES", list) or [NOREPLY]
+# bare email addresses extracted from the full formatted addresses, used for routing
+NOREPLY_EMAIL = _parseaddr(NOREPLY)[1]
+PARTNER_NOREPLY_EMAIL = _parseaddr(PARTNER_NOREPLY)[1]
 
-COINBASE_WEBHOOK_SECRET = os.environ.get("COINBASE_WEBHOOK_SECRET")
-COINBASE_CHECKOUT_ID = os.environ.get("COINBASE_CHECKOUT_ID")
-COINBASE_API_KEY = os.environ.get("COINBASE_API_KEY")
-try:
-    COINBASE_YEARLY_PRICE = float(os.environ["COINBASE_YEARLY_PRICE"])
-except Exception:
-    COINBASE_YEARLY_PRICE = 30.00
+# list of no reply addresses (bare emails for routing comparisons)
+NOREPLIES = sl_getenv("NOREPLIES", list) or list({NOREPLY_EMAIL, PARTNER_NOREPLY_EMAIL})
+
 
 ALIAS_LIMIT = os.environ.get("ALIAS_LIMIT") or "100/day;50/hour;5/minute"
 
@@ -431,7 +486,7 @@ except Exception:
     HIBP_SCAN_INTERVAL_DAYS = 7
 HIBP_API_KEYS = sl_getenv("HIBP_API_KEYS", list) or []
 HIBP_MAX_ALIAS_CHECK = 10_000
-HIBP_RPM = 100
+HIBP_RPM = int(os.environ.get("HIBP_API_RPM", 100))
 HIBP_SKIP_PARTNER_ALIAS = os.environ.get("HIBP_SKIP_PARTNER_ALIAS")
 
 KEEP_OLD_DATA_DAYS = 30
@@ -469,8 +524,10 @@ ZENDESK_ENABLED = "ZENDESK_ENABLED" in os.environ
 
 DMARC_CHECK_ENABLED = "DMARC_CHECK_ENABLED" in os.environ
 
-# Bounces can happen after 5 days
-VERP_MESSAGE_LIFETIME = 5 * 86400
+# How long a VERP address stays valid. Bounces can happen after 5 days, as mail
+# servers retry for days before giving up, so leave some margin: 7 days also
+# matches how long the transactional_email rows a VERP can point at are kept.
+VERP_MESSAGE_LIFETIME = 7 * 86400
 VERP_PREFIX = os.environ.get("VERP_PREFIX") or "sl"
 # Generate with python3 -c 'import secrets; print(secrets.token_hex(28))'
 VERP_EMAIL_SECRET = os.environ.get("VERP_EMAIL_SECRET") or (
@@ -525,12 +582,21 @@ def getRateLimitFromConfig(
     return limits
 
 
+# Rate limits
 ALIAS_CREATE_RATE_LIMIT_FREE = getRateLimitFromConfig(
     "ALIAS_CREATE_RATE_LIMIT_FREE", "10,900:50,3600"
 )
 ALIAS_CREATE_RATE_LIMIT_PAID = getRateLimitFromConfig(
     "ALIAS_CREATE_RATE_LIMIT_PAID", "50,900:200,3600"
 )
+ALIAS_RESTORE_ONE_RATE_LIMIT = getRateLimitFromConfig(
+    "ALIAS_RESTORE_ONE_RATE_LIMIT", "100,86400:200,604800"
+)
+ALIAS_RESTORE_ALL_RATE_LIMIT = getRateLimitFromConfig(
+    "ALIAS_RESTORE_ALL_RATE_LIMIT", "5,3600:20,604800"
+)
+
+
 PARTNER_API_TOKEN_SECRET = os.environ.get("PARTNER_API_TOKEN_SECRET") or (
     FLASK_SECRET + "partnerapitoken"
 )
@@ -575,7 +641,6 @@ SKIP_MX_LOOKUP_ON_CHECK = False
 
 DISABLE_RATE_LIMIT = "DISABLE_RATE_LIMIT" in os.environ
 
-SUBSCRIPTION_CHANGE_WEBHOOK = os.environ.get("SUBSCRIPTION_CHANGE_WEBHOOK", None)
 MAX_API_KEYS = int(os.environ.get("MAX_API_KEYS", 30))
 
 UPCLOUD_USERNAME = os.environ.get("UPCLOUD_USERNAME", None)
@@ -583,3 +648,105 @@ UPCLOUD_PASSWORD = os.environ.get("UPCLOUD_PASSWORD", None)
 UPCLOUD_DB_ID = os.environ.get("UPCLOUD_DB_ID", None)
 
 STORE_TRANSACTIONAL_EMAILS = "STORE_TRANSACTIONAL_EMAILS" in os.environ
+
+MAINTENANCE_MODE = "MAINTENANCE_MODE" in os.environ
+
+EVENT_WEBHOOK = os.environ.get("EVENT_WEBHOOK", None)
+
+# We want it disabled by default, so only skip if defined
+EVENT_WEBHOOK_SKIP_VERIFY_SSL = "EVENT_WEBHOOK_SKIP_VERIFY_SSL" in os.environ
+EVENT_WEBHOOK_DISABLE = "EVENT_WEBHOOK_DISABLE" in os.environ
+
+
+def read_webhook_enabled_user_ids() -> Optional[List[int]]:
+    user_ids = os.environ.get("EVENT_WEBHOOK_ENABLED_USER_IDS", None)
+    if user_ids is None:
+        return None
+
+    ids = []
+    for user_id in user_ids.split(","):
+        try:
+            ids.append(int(user_id.strip()))
+        except ValueError:
+            pass
+    return ids
+
+
+EVENT_WEBHOOK_ENABLED_USER_IDS: Optional[List[int]] = read_webhook_enabled_user_ids()
+
+# Allow to define a different DB_URI for the event listener, in case we want to skip the connection pool
+# It defaults to the regular DB_URI in case it's needed
+EVENT_LISTENER_DB_URI = os.environ.get("EVENT_LISTENER_DB_URI", DB_URI)
+
+MAX_BOUNCES_1D = int(os.environ.get("MAX_BOUNCES_1D", 12))
+MAX_BOUNCES_1W = int(os.environ.get("MAX_BOUNCES_1W", 10))
+
+# How many provider complaints we store per user and per day. Complaints are
+# only identified by the envelope sender, so anybody can have us store one
+MAX_PROVIDER_COMPLAINTS_1D = int(os.environ.get("MAX_PROVIDER_COMPLAINTS_1D", 10))
+
+
+def read_partner_dict(var: str) -> dict[int, str]:
+    partner_value = get_env_dict(var)
+    if len(partner_value) == 0:
+        return {}
+
+    res: dict[int, str] = {}
+    for partner_id in partner_value.keys():
+        try:
+            partner_id_int = int(partner_id.strip())
+            res[partner_id_int] = partner_value[partner_id]
+        except ValueError:
+            pass
+    return res
+
+
+PARTNER_DNS_CUSTOM_DOMAINS: dict[int, str] = read_partner_dict(
+    "PARTNER_DNS_CUSTOM_DOMAINS"
+)
+PARTNER_CUSTOM_DOMAIN_VALIDATION_PREFIXES: dict[int, str] = read_partner_dict(
+    "PARTNER_CUSTOM_DOMAIN_VALIDATION_PREFIXES"
+)
+
+MAILBOX_VERIFICATION_OVERRIDE_CODE: Optional[str] = os.environ.get(
+    "MAILBOX_VERIFICATION_OVERRIDE_CODE", None
+)
+
+AUDIT_LOG_MAX_DAYS = int(os.environ.get("AUDIT_LOG_MAX_DAYS", 30))
+ALIAS_TRASH_DAYS = int(os.environ.get("ALIAS_TRASH_DAYS", 30))
+ALLOWED_OAUTH_SCHEMES = get_env_csv("ALLOWED_OAUTH_SCHEMES", "auth.simplelogin,https")
+MAX_EMAIL_FORWARD_RECIPIENTS = int(os.environ.get("MAX_EMAIL_FORWARD_RECIPIENTS", 30))
+
+
+def read_hex_data(key: string, default: bytes) -> bytes:
+    data = os.environ.get(key)
+
+    return bytes.fromhex(data) if data else default
+
+
+MASTER_ENC_KEY = read_hex_data(
+    "MASTER_ENC_KEY_HEX", (FLASK_SECRET + "enckey").encode("utf-8")
+)
+MAC_KEY = read_hex_data("MAC_KEY_HEX", (FLASK_SECRET + "mackey").encode("utf-8"))
+ABUSER_HKDF_SALT = read_hex_data(
+    "ABUSER_HKDF_SALT", (FLASK_SECRET + "absalt").encode("utf-8")
+)
+
+INVALID_MX_IPS = get_env_csv("INVALID_MX_IPS", [])
+
+USE_RUST_PGP = "USE_RUST_PGP" in os.environ
+
+SMTP_SIZE_LIMIT = int(os.environ.get("SMTP_SIZE_LIMIT", 41943040))  # 40MiB
+
+PARTNER_SUPPORT_URL = os.environ.get("PARTNER_SUPPORT_URL", None)
+
+ADMIN_FIDO_REQUIRED = os.environ.get("ADMIN_FIDO_REQUIRED", "none")
+if ADMIN_FIDO_REQUIRED not in ("none", "any", "hardware"):
+    raise ValueError("ADMIN_FIDO_REQUIRED is not a valid value")
+ADMIN_GRACE_PERIOD = int(os.environ.get("ADMIN_GRACE_PERIOD", 43200))
+
+DROP_PGP_KEY_ATTACHMENTS_ON_REPLY = "DROP_PGP_KEY_ATTACHMENTS_ON_REPLY" in os.environ
+
+ENFORCE_OAUTH_CLIENT_APPROVED = "ENFORCE_OAUTH_CLIENT_APPROVED" in os.environ
+
+MAX_DOMAIN_CHECKS = max(int(os.environ.get("MAX_DOMAIN_CHECKS", 4)), 1)

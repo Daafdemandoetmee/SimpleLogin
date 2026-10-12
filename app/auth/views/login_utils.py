@@ -1,4 +1,4 @@
-from time import time
+import uuid
 from typing import Optional
 
 from flask import session, redirect, url_for, request
@@ -7,6 +7,7 @@ from flask_login import login_user
 from app.config import MFA_USER_ID
 from app.log import LOG
 from app.models import Referral
+from app.session import set_session_sudo_mode
 
 
 def after_login(user, next_url, login_from_proton: bool = False):
@@ -33,8 +34,10 @@ def after_login(user, next_url, login_from_proton: bool = False):
                 return redirect(url_for("auth.mfa"))
 
     LOG.d("log user %s in", user)
+    # Change session_id so that session cannot be re-used
+    session.session_id = str(uuid.uuid4())
     login_user(user)
-    session["sudo_time"] = int(time())
+    set_session_sudo_mode(user.id)
 
     # User comes to login page from another page
     if next_url:

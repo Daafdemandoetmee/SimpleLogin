@@ -1,5 +1,4 @@
 from functools import wraps
-from time import time
 
 from flask import render_template, flash, redirect, url_for, session, request
 from flask_login import login_required, current_user
@@ -11,7 +10,8 @@ from app.dashboard.base import dashboard_bp
 from app.extensions import limiter
 from app.log import LOG
 from app.models import PartnerUser, SocialAuth
-from app.proton.utils import get_proton_partner
+from app.proton.proton_partner import get_proton_partner
+from app.session import is_session_sudo_mode_active, set_session_sudo_mode
 from app.utils import sanitize_next_url
 
 _SUDO_GAP = 120
@@ -31,7 +31,13 @@ def enter_sudo():
         password = password_check_form.password.data
 
         if current_user.check_password(password):
-            session["sudo_time"] = int(time())
+            set_session_sudo_mode(current_user.id)
+
+            # Restore flash messages that were preserved when sudo_required intercepted
+            if "_preserved_flashes" in session:
+                existing = session.get("_flashes", [])
+                existing.extend(session.pop("_preserved_flashes"))
+                session["_flashes"] = existing
 
             # User comes to sudo page from another page
             next_url = sanitize_next_url(request.args.get("next"))
@@ -70,11 +76,17 @@ def enter_sudo():
 def sudo_required(f):
     @wraps(f)
     def wrap(*args, **kwargs):
-        if (
-            "sudo_time" not in session
-            or (time() - int(session["sudo_time"])) > _SUDO_GAP
-        ):
+        if not is_session_sudo_mode_active(current_user.id, _SUDO_GAP):
+            # Preserve pending flash messages so they aren't consumed by enter_sudo
+            # and are shown on the destination page after sudo completes.
+            if session.get("_flashes"):
+                session["_preserved_flashes"] = session.pop("_flashes")
             return redirect(url_for("dashboard.enter_sudo", next=request.path))
+        # Restore any flash messages that were preserved through the redirect chain
+        if "_preserved_flashes" in session:
+            existing = session.get("_flashes", [])
+            existing.extend(session.pop("_preserved_flashes"))
+            session["_flashes"] = existing
         return f(*args, **kwargs)
 
     return wrap

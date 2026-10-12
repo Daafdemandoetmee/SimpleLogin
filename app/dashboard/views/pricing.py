@@ -1,5 +1,4 @@
 import arrow
-from coinbase_commerce import Client
 from flask import render_template, flash, redirect, url_for
 from flask_login import login_required, current_user
 
@@ -8,12 +7,8 @@ from app.config import (
     PADDLE_MONTHLY_PRODUCT_ID,
     PADDLE_YEARLY_PRODUCT_ID,
     URL,
-    COINBASE_YEARLY_PRICE,
-    COINBASE_API_KEY,
 )
 from app.dashboard.base import dashboard_bp
-from app.extensions import limiter
-from app.log import LOG
 from app.models import (
     AppleSubscription,
     Subscription,
@@ -22,7 +17,8 @@ from app.models import (
     PartnerUser,
     PartnerSubscription,
 )
-from app.proton.utils import get_proton_partner
+from app.payments.paddle_passthrough import sign_passthrough
+from app.proton.proton_partner import get_proton_partner
 
 
 @dashboard_bp.route("/pricing", methods=["GET", "POST"])
@@ -70,6 +66,7 @@ def pricing():
         PADDLE_MONTHLY_PRODUCT_ID=PADDLE_MONTHLY_PRODUCT_ID,
         PADDLE_YEARLY_PRODUCT_ID=PADDLE_YEARLY_PRODUCT_ID,
         success_url=URL + "/dashboard/subscription_success",
+        paddle_passthrough=sign_passthrough(current_user.id),
         manual_sub=manual_sub,
         coinbase_sub=coinbase_sub,
         now=now,
@@ -83,20 +80,3 @@ def subscription_success():
     return render_template(
         "dashboard/thank-you.html",
     )
-
-
-@dashboard_bp.route("/coinbase_checkout")
-@login_required
-@limiter.limit("5/minute")
-def coinbase_checkout_route():
-    client = Client(api_key=COINBASE_API_KEY)
-    charge = client.charge.create(
-        name="1 Year SimpleLogin Premium Subscription",
-        local_price={"amount": str(COINBASE_YEARLY_PRICE), "currency": "USD"},
-        pricing_type="fixed_price",
-        metadata={"user_id": current_user.id},
-    )
-
-    LOG.d("Create coinbase charge %s", charge)
-
-    return redirect(charge["hosted_url"])

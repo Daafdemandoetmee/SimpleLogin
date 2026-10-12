@@ -1,3 +1,4 @@
+import html
 import uuid
 from io import BytesIO
 from typing import Optional, Tuple
@@ -35,6 +36,7 @@ def apply_dmarc_policy_for_forward_phase(
     LOG.i(f"Spam check result in {spam_result}")
 
     from_header = get_header_unicode(msg[headers.FROM])
+    from_header = html.escape(from_header)
 
     warning_plain_text = """This email failed anti-phishing checks when it was received by SimpleLogin, be careful with its content.
 More info on https://simplelogin.io/docs/getting-started/anti-phishing/
@@ -64,6 +66,7 @@ More info on https://simplelogin.io/docs/getting-started/anti-phishing/
             msg,
             warning_plain_text,
             warning_html,
+            subject_prefix="[Possible phishing attempt]",
         )
         return changed_msg, None
 
@@ -76,6 +79,7 @@ More info on https://simplelogin.io/docs/getting-started/anti-phishing/
             msg,
             warning_plain_text,
             warning_html,
+            subject_prefix="[Possible phishing attempt]",
         )
         return changed_msg, None
 
@@ -84,8 +88,8 @@ More info on https://simplelogin.io/docs/getting-started/anti-phishing/
         DmarcCheckResult.reject,
     ):
         LOG.w(
-            f"dmarc forward: put email from {contact} to {alias} to quarantine. {spam_result.event_data()}, "
-            f"mail_from:{envelope.mail_from}, from_header: {msg[headers.FROM]}"
+            f"dmarc forward: put email from {contact.email} to {alias.email} to quarantine. {spam_result.event_data()}, "
+            f"mail_from:{envelope.mail_from}, from_header: {from_header}"
         )
         email_log = quarantine_dmarc_failed_forward_email(alias, contact, envelope, msg)
         Notification.create(
@@ -104,12 +108,14 @@ More info on https://simplelogin.io/docs/getting-started/anti-phishing/
             f"An email sent to {alias.email} has been quarantined",
             render(
                 "transactional/message-quarantine-dmarc.txt.jinja2",
+                user=user,
                 from_header=from_header,
                 alias=alias,
                 refused_email_url=email_log.get_dashboard_url(),
             ),
             render(
                 "transactional/message-quarantine-dmarc.html",
+                user=user,
                 from_header=from_header,
                 alias=alias,
                 refused_email_url=email_log.get_dashboard_url(),
@@ -174,12 +180,14 @@ def apply_dmarc_policy_for_reply_phase(
         f"Attempt to send an email to your contact {contact_recipient.email} from {envelope.mail_from}",
         render(
             "transactional/spoof-reply.txt.jinja2",
+            user=alias_from.user,
             contact=contact_recipient,
             alias=alias_from,
             sender=envelope.mail_from,
         ),
         render(
             "transactional/spoof-reply.html",
+            user=alias_from.user,
             contact=contact_recipient,
             alias=alias_from,
             sender=envelope.mail_from,

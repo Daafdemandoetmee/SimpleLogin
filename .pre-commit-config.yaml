@@ -7,11 +7,12 @@ repos:
     hooks:
       - id: check-yaml
       - id: trailing-whitespace
-  - repo: https://github.com/Riverside-Healthcare/djLint
-    rev: v1.3.0
+  - repo: https://github.com/djlint/djLint
+    rev: v1.35.3
     hooks:
       - id: djlint-jinja
-        files: '.*\.html'
+        types: [file]
+        files: \.html$
         entry: djlint --reformat
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
@@ -22,4 +23,3 @@ repos:
         args: [ --fix ]
       # Run the formatter.
       - id: ruff-format
-

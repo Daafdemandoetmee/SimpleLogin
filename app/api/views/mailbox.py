@@ -1,22 +1,14 @@
 from smtplib import SMTPRecipientsRefused
 
-import arrow
 from flask import g
 from flask import jsonify
 from flask import request
 
+from app import mailbox_utils
 from app.api.base import api_bp, require_api_auth
-from app.config import JOB_DELETE_MAILBOX
-from app.dashboard.views.mailbox import send_verification_email
-from app.dashboard.views.mailbox_detail import verify_mailbox_change
 from app.db import Session
-from app.email_utils import (
-    mailbox_already_used,
-    email_can_be_used_as_mailbox,
-)
-from app.email_validation import is_valid_email
-from app.log import LOG
-from app.models import Mailbox, Job
+from app.extensions import limiter
+from app.models import Mailbox
 from app.utils import sanitize_email
 
 
@@ -32,6 +24,7 @@ def mailbox_to_dict(mailbox: Mailbox):
 
 
 @api_bp.route("/mailboxes", methods=["POST"])
+@limiter.limit("20/hour")
 @require_api_auth
 def create_mailbox():
     """
@@ -42,36 +35,25 @@ def create_mailbox():
         the new mailbox dict
     """
     user = g.user
-    mailbox_email = sanitize_email(request.get_json().get("email"))
+    email = request.get_json().get("email")
+    if not email:
+        return jsonify(error="Invalid email"), 400
 
-    if not user.is_premium():
-        return jsonify(error="Only premium plan can add additional mailbox"), 400
+    mailbox_email = sanitize_email(email)
 
-    if not is_valid_email(mailbox_email):
-        return jsonify(error=f"{mailbox_email} invalid"), 400
-    elif mailbox_already_used(mailbox_email, user):
-        return jsonify(error=f"{mailbox_email} already used"), 400
-    elif not email_can_be_used_as_mailbox(mailbox_email):
-        return (
-            jsonify(
-                error=f"{mailbox_email} cannot be used. Please note a mailbox cannot "
-                f"be a disposable email address"
-            ),
-            400,
-        )
-    else:
-        new_mailbox = Mailbox.create(email=mailbox_email, user_id=user.id)
-        Session.commit()
+    try:
+        new_mailbox = mailbox_utils.create_mailbox(user, mailbox_email).mailbox
+    except mailbox_utils.MailboxError as e:
+        return jsonify(error=e.msg), 400
 
-        send_verification_email(user, new_mailbox)
-
-        return (
-            jsonify(mailbox_to_dict(new_mailbox)),
-            201,
-        )
+    return (
+        jsonify(mailbox_to_dict(new_mailbox)),
+        201,
+    )
 
 
 @api_bp.route("/mailboxes/<int:mailbox_id>", methods=["DELETE"])
+@limiter.limit("100/hour")
 @require_api_auth
 def delete_mailbox(mailbox_id):
     """
@@ -91,48 +73,32 @@ def delete_mailbox(mailbox_id):
     if not mailbox or mailbox.user_id != user.id:
         return jsonify(error="Forbidden"), 403
 
-    if mailbox.id == user.default_mailbox_id:
-        return jsonify(error="You cannot delete the default mailbox"), 400
+    if mailbox.is_admin_disabled():
+        return (
+            jsonify(
+                error="This mailbox has been disabled and cannot be deleted. Please contact support."
+            ),
+            400,
+        )
 
     data = request.get_json() or {}
     transfer_mailbox_id = data.get("transfer_aliases_to")
     if transfer_mailbox_id and int(transfer_mailbox_id) >= 0:
-        transfer_mailbox = Mailbox.get(transfer_mailbox_id)
+        transfer_mailbox_id = int(transfer_mailbox_id)
+    else:
+        transfer_mailbox_id = None
 
-        if not transfer_mailbox or transfer_mailbox.user_id != user.id:
-            return (
-                jsonify(error="You must transfer the aliases to a mailbox you own."),
-                403,
-            )
-
-        if transfer_mailbox_id == mailbox_id:
-            return (
-                jsonify(
-                    error="You can not transfer the aliases to the mailbox you want to delete."
-                ),
-                400,
-            )
-
-        if not transfer_mailbox.verified:
-            return jsonify(error="Your new mailbox is not verified"), 400
-
-    # Schedule delete account job
-    LOG.w("schedule delete mailbox job for %s", mailbox)
-    Job.create(
-        name=JOB_DELETE_MAILBOX,
-        payload={
-            "mailbox_id": mailbox.id,
-            "transfer_mailbox_id": transfer_mailbox_id,
-        },
-        run_at=arrow.now(),
-        commit=True,
-    )
+    try:
+        mailbox_utils.delete_mailbox(user, mailbox_id, transfer_mailbox_id)
+    except mailbox_utils.MailboxError as e:
+        return jsonify(error=e.msg), 400
 
     return jsonify(deleted=True), 200
 
 
 @api_bp.route("/mailboxes/<int:mailbox_id>", methods=["PUT"])
 @require_api_auth
+@limiter.limit("100/hour")
 def update_mailbox(mailbox_id):
     """
     Update mailbox
@@ -151,6 +117,12 @@ def update_mailbox(mailbox_id):
     if not mailbox or mailbox.user_id != user.id:
         return jsonify(error="Forbidden"), 403
 
+    if mailbox.is_admin_disabled():
+        return (
+            jsonify(error="This mailbox has been disabled. Please contact support."),
+            400,
+        )
+
     data = request.get_json() or {}
     changed = False
     if "default" in data:
@@ -168,20 +140,10 @@ def update_mailbox(mailbox_id):
 
     if "email" in data:
         new_email = sanitize_email(data.get("email"))
-
-        if mailbox_already_used(new_email, user):
-            return jsonify(error=f"{new_email} already used"), 400
-        elif not email_can_be_used_as_mailbox(new_email):
-            return (
-                jsonify(
-                    error=f"{new_email} cannot be used. Please note a mailbox cannot "
-                    f"be a disposable email address"
-                ),
-                400,
-            )
-
         try:
-            verify_mailbox_change(user, mailbox, new_email)
+            mailbox_utils.request_mailbox_email_change(user, mailbox, new_email)
+        except mailbox_utils.MailboxError as e:
+            return jsonify(error=e.msg), 400
         except SMTPRecipientsRefused:
             return jsonify(error=f"Incorrect mailbox, please recheck {new_email}"), 400
         else:
@@ -191,7 +153,7 @@ def update_mailbox(mailbox_id):
     if "cancel_email_change" in data:
         cancel_email_change = data.get("cancel_email_change")
         if cancel_email_change:
-            mailbox.new_email = None
+            mailbox_utils.cancel_email_change(mailbox.id, user)
             changed = True
 
     if changed:

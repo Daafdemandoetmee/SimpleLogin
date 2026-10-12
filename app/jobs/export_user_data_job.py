@@ -11,14 +11,15 @@ from typing import List, Dict, Optional
 import arrow
 import sqlalchemy
 
-from app import config
+from app.constants import JobType
 from app.db import Session
 from app.email import headers
 from app.email_utils import (
     generate_verp_email,
     render,
     add_dkim_signature,
-    get_email_domain_part,
+    get_noreply_address,
+    get_noreply_domain,
 )
 from app.mail_sender import sl_sendmail
 from app.models import (
@@ -35,6 +36,7 @@ from app.models import (
     TransactionalEmail,
     VerpType,
     Job,
+    JobState,
 )
 
 
@@ -129,15 +131,20 @@ class ExportUserDataJob:
         return memfile
 
     def run(self):
+        if not self._user.can_send_or_receive():
+            return
+
         zipped_contents = self._build_zip()
 
         to_email = self._user.email
 
         msg = MIMEMultipart()
         msg[headers.SUBJECT] = "Your SimpleLogin data"
-        msg[headers.FROM] = f'"SimpleLogin (noreply)" <{config.NOREPLY}>'
+        msg[headers.FROM] = get_noreply_address(self._user)
         msg[headers.TO] = to_email
-        msg.attach(MIMEText(render("transactional/user-report.html"), "html"))
+        msg.attach(
+            MIMEText(render("transactional/user-report.html", user=self._user), "html")
+        )
         attachment = MIMEApplication(zipped_contents.read())
         attachment.add_header(
             "Content-Disposition", "attachment", filename="user_report.zip"
@@ -146,7 +153,7 @@ class ExportUserDataJob:
         msg.attach(attachment)
 
         # add DKIM
-        email_domain = config.NOREPLY[config.NOREPLY.find("@") + 1 :]
+        email_domain = get_noreply_domain(self._user)
         add_dkim_signature(msg, email_domain)
 
         transaction = TransactionalEmail.create(email=to_email, commit=True)
@@ -154,7 +161,7 @@ class ExportUserDataJob:
             generate_verp_email(
                 VerpType.transactional,
                 transaction.id,
-                get_email_domain_part(config.NOREPLY),
+                get_noreply_domain(self._user),
             ),
             to_email,
             msg,
@@ -172,17 +179,18 @@ class ExportUserDataJob:
         jobs_in_db = (
             Session.query(Job)
             .filter(
-                Job.name == config.JOB_SEND_USER_REPORT,
+                Job.name == JobType.SEND_USER_REPORT.value,
                 Job.payload.op("->")("user_id").cast(sqlalchemy.TEXT)
                 == str(self._user.id),
                 Job.taken.is_(False),
+                Job.state == JobState.ready.value,
             )
             .count()
         )
         if jobs_in_db > 0:
             return None
         return Job.create(
-            name=config.JOB_SEND_USER_REPORT,
+            name=JobType.SEND_USER_REPORT.value,
             payload={"user_id": self._user.id},
             run_at=arrow.now(),
             commit=True,

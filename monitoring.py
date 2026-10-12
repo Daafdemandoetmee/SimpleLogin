@@ -4,10 +4,14 @@ import subprocess
 from time import sleep
 from typing import List, Dict
 
+import arrow
 import newrelic.agent
 
+from app.models import JobState
+from app.config import JOB_MAX_ATTEMPTS, JOB_TAKEN_RETRY_WAIT_MINS
 from app.db import Session
 from app.log import LOG
+from job_runner import get_jobs_to_run_query
 from monitor.metric_exporter import MetricExporter
 
 # the number of consecutive fails
@@ -93,11 +97,109 @@ def log_nb_db_connection():
     newrelic.agent.record_custom_metric("Custom/nb_db_connections", nb_connection)
 
 
+@newrelic.agent.background_task()
+def log_nb_db_connection_by_app_name():
+    # get the number of connections to the DB
+    rows = Session.execute(
+        "SELECT application_name, count(datid) FROM pg_stat_activity group by application_name"
+    )
+    for row in rows:
+        if row[0].find("sl-") == 0:
+            LOG.d("number of db connections for app %s = %s", row[0], row[1])
+            newrelic.agent.record_custom_metric(
+                f"Custom/nb_db_app_connection/{row[0]}", row[1]
+            )
+
+
+@newrelic.agent.background_task()
+def log_pending_to_process_events():
+    r = Session.execute("select count(*) from sync_event WHERE taken_time IS NULL;")
+    events_pending = list(r)[0][0]
+
+    LOG.d("number of events pending to process %s", events_pending)
+    newrelic.agent.record_custom_metric(
+        "Custom/sync_events_pending_to_process", events_pending
+    )
+
+
+@newrelic.agent.background_task()
+def log_events_pending_dead_letter():
+    since = arrow.now().shift(minutes=-10).datetime
+    r = Session.execute(
+        """
+        SELECT COUNT(*)
+        FROM sync_event
+        WHERE (taken_time IS NOT NULL AND taken_time < :since)
+           OR (taken_time IS NULL AND created_at < :since)
+        """,
+        {"since": since},
+    )
+    events_pending = list(r)[0][0]
+
+    LOG.d("number of events pending dead letter %s", events_pending)
+    newrelic.agent.record_custom_metric(
+        "Custom/sync_events_pending_dead_letter", events_pending
+    )
+
+
+@newrelic.agent.background_task()
+def log_failed_events():
+    r = Session.execute(
+        """
+        SELECT COUNT(*)
+        FROM sync_event
+        WHERE retry_count >= 10;
+        """,
+    )
+    failed_events = list(r)[0][0]
+
+    LOG.d("number of failed events %s", failed_events)
+    newrelic.agent.record_custom_metric("Custom/sync_events_failed", failed_events)
+
+
+@newrelic.agent.background_task()
+def log_jobs_to_run():
+    taken_before_time = arrow.now().shift(minutes=-JOB_TAKEN_RETRY_WAIT_MINS)
+    query = get_jobs_to_run_query(taken_before_time)
+    count = query.count()
+    LOG.d(f"Pending jobs to run: {count}")
+    newrelic.agent.record_custom_metric("Custom/jobs_to_run", count)
+
+
+@newrelic.agent.background_task()
+def log_failed_jobs():
+    r = Session.execute(
+        """
+        SELECT COUNT(*)
+        FROM job
+        WHERE (
+            state = :error_state
+            OR (state = :taken_state AND attempts >= :max_attempts)
+        )
+        """,
+        {
+            "error_state": JobState.error.value,
+            "taken_state": JobState.taken.value,
+            "max_attempts": JOB_MAX_ATTEMPTS,
+        },
+    )
+    failed_jobs = list(r)[0][0]
+
+    LOG.d(f"Failed jobs: {failed_jobs}")
+    newrelic.agent.record_custom_metric("Custom/failed_jobs", failed_jobs)
+
+
 if __name__ == "__main__":
     exporter = MetricExporter(get_newrelic_license())
     while True:
         log_postfix_metrics()
         log_nb_db_connection()
+        log_pending_to_process_events()
+        log_events_pending_dead_letter()
+        log_failed_events()
+        log_nb_db_connection_by_app_name()
+        log_jobs_to_run()
+        log_failed_jobs()
         Session.close()
 
         exporter.run()

@@ -1,33 +1,26 @@
 import re
 
-import arrow
 from flask import render_template, request, redirect, url_for, flash
 from flask_login import login_required, current_user
 from flask_wtf import FlaskForm
 from wtforms import StringField, validators, IntegerField
 
-from app.config import EMAIL_SERVERS_WITH_PRIORITY, EMAIL_DOMAIN, JOB_DELETE_DOMAIN
+from app import config
+from app.constants import DMARC_RECORD
+from app.custom_domain_utils import delete_custom_domain, set_custom_domain_mailboxes
 from app.custom_domain_validation import CustomDomainValidation
 from app.dashboard.base import dashboard_bp
 from app.db import Session
-from app.dns_utils import (
-    get_mx_domains,
-    get_spf_domain,
-    get_txt_record,
-    is_mx_equivalent,
-)
-from app.log import LOG
 from app.models import (
     CustomDomain,
     Alias,
     DomainDeletedAlias,
     Mailbox,
-    DomainMailbox,
     AutoCreateRule,
     AutoCreateRuleMailbox,
-    Job,
 )
 from app.regex_utils import regex_match
+from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
 from app.utils import random_string, CSRFValidationForm
 
 
@@ -44,12 +37,12 @@ def domain_detail_dns(custom_domain_id):
         custom_domain.ownership_txt_token = random_string(30)
         Session.commit()
 
-    spf_record = f"v=spf1 include:{EMAIL_DOMAIN} ~all"
-
-    domain_validator = CustomDomainValidation(EMAIL_DOMAIN)
+    domain_validator = CustomDomainValidation(
+        dkim_domain=config.EMAIL_DOMAIN,
+        partner_domains=config.PARTNER_DNS_CUSTOM_DOMAINS,
+        partner_domains_validation_prefixes=config.PARTNER_CUSTOM_DOMAIN_VALIDATION_PREFIXES,
+    )
     csrf_form = CSRFValidationForm()
-
-    dmarc_record = "v=DMARC1; p=quarantine; pct=100; adkim=s; aspf=s"
 
     mx_ok = spf_ok = dkim_ok = dmarc_ok = ownership_ok = True
     mx_errors = spf_errors = dkim_errors = dmarc_errors = ownership_errors = []
@@ -59,15 +52,14 @@ def domain_detail_dns(custom_domain_id):
             flash("Invalid request", "warning")
             return redirect(request.url)
         if request.form.get("form-name") == "check-ownership":
-            txt_records = get_txt_record(custom_domain.domain)
-
-            if custom_domain.get_ownership_dns_txt_value() in txt_records:
+            ownership_validation_result = domain_validator.validate_domain_ownership(
+                custom_domain
+            )
+            if ownership_validation_result.success:
                 flash(
                     "Domain ownership is verified. Please proceed to the other records setup",
                     "success",
                 )
-                custom_domain.ownership_verified = True
-                Session.commit()
                 return redirect(
                     url_for(
                         "dashboard.domain_detail_dns",
@@ -78,36 +70,38 @@ def domain_detail_dns(custom_domain_id):
             else:
                 flash("We can't find the needed TXT record", "error")
                 ownership_ok = False
-                ownership_errors = txt_records
+                ownership_errors = ownership_validation_result.errors
 
         elif request.form.get("form-name") == "check-mx":
-            mx_domains = get_mx_domains(custom_domain.domain)
+            if not custom_domain.ownership_verified:
+                flash("You need to verify the domain ownership first", "error")
+                return redirect(
+                    url_for(
+                        "dashboard.domain_detail_dns",
+                        custom_domain_id=custom_domain.id,
+                        _anchor="ownership-form",
+                    )
+                )
 
-            if not is_mx_equivalent(mx_domains, EMAIL_SERVERS_WITH_PRIORITY):
-                flash("The MX record is not correctly set", "warning")
-
-                mx_ok = False
-                # build mx_errors to show to user
-                mx_errors = [
-                    f"{priority} {domain}" for (priority, domain) in mx_domains
-                ]
-            else:
+            mx_validation_result = domain_validator.validate_mx_records(custom_domain)
+            if mx_validation_result.success:
                 flash(
                     "Your domain can start receiving emails. You can now use it to create alias",
                     "success",
                 )
-                custom_domain.verified = True
-                Session.commit()
                 return redirect(
                     url_for(
                         "dashboard.domain_detail_dns", custom_domain_id=custom_domain.id
                     )
                 )
+            else:
+                flash("The MX record is not correctly set", "warning")
+                mx_ok = False
+                mx_errors = mx_validation_result.errors
+
         elif request.form.get("form-name") == "check-spf":
-            spf_domains = get_spf_domain(custom_domain.domain)
-            if EMAIL_DOMAIN in spf_domains:
-                custom_domain.spf_verified = True
-                Session.commit()
+            spf_validation_result = domain_validator.validate_spf_records(custom_domain)
+            if spf_validation_result.success:
                 flash("SPF is setup correctly", "success")
                 return redirect(
                     url_for(
@@ -115,14 +109,12 @@ def domain_detail_dns(custom_domain_id):
                     )
                 )
             else:
-                custom_domain.spf_verified = False
-                Session.commit()
                 flash(
-                    f"SPF: {EMAIL_DOMAIN} is not included in your SPF record.",
+                    f"SPF: {config.EMAIL_DOMAIN} is not included in your SPF record.",
                     "warning",
                 )
                 spf_ok = False
-                spf_errors = get_txt_record(custom_domain.domain)
+                spf_errors = spf_validation_result.errors
 
         elif request.form.get("form-name") == "check-dkim":
             dkim_errors = domain_validator.validate_dkim_records(custom_domain)
@@ -138,10 +130,10 @@ def domain_detail_dns(custom_domain_id):
                 flash("DKIM: the CNAME record is not correctly set", "warning")
 
         elif request.form.get("form-name") == "check-dmarc":
-            txt_records = get_txt_record("_dmarc." + custom_domain.domain)
-            if dmarc_record in txt_records:
-                custom_domain.dmarc_verified = True
-                Session.commit()
+            dmarc_validation_result = domain_validator.validate_dmarc_records(
+                custom_domain
+            )
+            if dmarc_validation_result.success:
                 flash("DMARC is setup correctly", "success")
                 return redirect(
                     url_for(
@@ -149,19 +141,23 @@ def domain_detail_dns(custom_domain_id):
                     )
                 )
             else:
-                custom_domain.dmarc_verified = False
-                Session.commit()
                 flash(
                     "DMARC: The TXT record is not correctly set",
                     "warning",
                 )
                 dmarc_ok = False
-                dmarc_errors = txt_records
+                dmarc_errors = dmarc_validation_result.errors
 
     return render_template(
         "dashboard/domain_detail/dns.html",
-        EMAIL_SERVERS_WITH_PRIORITY=EMAIL_SERVERS_WITH_PRIORITY,
-        dkim_records=domain_validator.get_dkim_records(),
+        EMAIL_SERVERS_WITH_PRIORITY=config.EMAIL_SERVERS_WITH_PRIORITY,
+        ownership_records=domain_validator.get_ownership_verification_record(
+            custom_domain
+        ),
+        expected_mx_records=domain_validator.get_expected_mx_records(custom_domain),
+        dkim_records=domain_validator.get_dkim_records(custom_domain),
+        spf_record=domain_validator.get_expected_spf_record(custom_domain),
+        dmarc_record=DMARC_RECORD,
         **locals(),
     )
 
@@ -171,7 +167,7 @@ def domain_detail_dns(custom_domain_id):
 def domain_detail(custom_domain_id):
     csrf_form = CSRFValidationForm()
     custom_domain: CustomDomain = CustomDomain.get(custom_domain_id)
-    mailboxes = current_user.mailboxes()
+    mailboxes = [mb for mb in current_user.mailboxes() if not mb.is_admin_disabled()]
 
     if not custom_domain or custom_domain.user_id != current_user.id:
         flash("You cannot see this page", "warning")
@@ -183,6 +179,11 @@ def domain_detail(custom_domain_id):
             return redirect(request.url)
         if request.form.get("form-name") == "switch-catch-all":
             custom_domain.catch_all = not custom_domain.catch_all
+            emit_user_audit_log(
+                user=current_user,
+                action=UserAuditLogAction.UpdateCustomDomain,
+                message=f"Switched custom domain {custom_domain.id} ({custom_domain.domain}) catch all to {custom_domain.catch_all}",
+            )
             Session.commit()
 
             if custom_domain.catch_all:
@@ -201,6 +202,11 @@ def domain_detail(custom_domain_id):
         elif request.form.get("form-name") == "set-name":
             if request.form.get("action") == "save":
                 custom_domain.name = request.form.get("alias-name").replace("\n", "")
+                emit_user_audit_log(
+                    user=current_user,
+                    action=UserAuditLogAction.UpdateCustomDomain,
+                    message=f"Switched custom domain {custom_domain.id} ({custom_domain.domain}) name",
+                )
                 Session.commit()
                 flash(
                     f"Default alias name for Domain {custom_domain.domain} has been set",
@@ -208,6 +214,11 @@ def domain_detail(custom_domain_id):
                 )
             else:
                 custom_domain.name = None
+                emit_user_audit_log(
+                    user=current_user,
+                    action=UserAuditLogAction.UpdateCustomDomain,
+                    message=f"Cleared custom domain {custom_domain.id} ({custom_domain.domain}) name",
+                )
                 Session.commit()
                 flash(
                     f"Default alias name for Domain {custom_domain.domain} has been removed",
@@ -220,6 +231,11 @@ def domain_detail(custom_domain_id):
         elif request.form.get("form-name") == "switch-random-prefix-generation":
             custom_domain.random_prefix_generation = (
                 not custom_domain.random_prefix_generation
+            )
+            emit_user_audit_log(
+                user=current_user,
+                action=UserAuditLogAction.UpdateCustomDomain,
+                message=f"Switched custom domain {custom_domain.id} ({custom_domain.domain}) random prefix generation to {custom_domain.random_prefix_generation}",
             )
             Session.commit()
 
@@ -238,40 +254,16 @@ def domain_detail(custom_domain_id):
             )
         elif request.form.get("form-name") == "update":
             mailbox_ids = request.form.getlist("mailbox_ids")
-            # check if mailbox is not tempered with
-            mailboxes = []
-            for mailbox_id in mailbox_ids:
-                mailbox = Mailbox.get(mailbox_id)
-                if (
-                    not mailbox
-                    or mailbox.user_id != current_user.id
-                    or not mailbox.verified
-                ):
-                    flash("Something went wrong, please retry", "warning")
-                    return redirect(
-                        url_for(
-                            "dashboard.domain_detail", custom_domain_id=custom_domain.id
-                        )
-                    )
-                mailboxes.append(mailbox)
+            result = set_custom_domain_mailboxes(
+                user_id=current_user.id,
+                custom_domain=custom_domain,
+                mailbox_ids=mailbox_ids,
+            )
 
-            if not mailboxes:
-                flash("You must select at least 1 mailbox", "warning")
-                return redirect(
-                    url_for(
-                        "dashboard.domain_detail", custom_domain_id=custom_domain.id
-                    )
-                )
-
-            # first remove all existing domain-mailboxes links
-            DomainMailbox.filter_by(domain_id=custom_domain.id).delete()
-            Session.flush()
-
-            for mailbox in mailboxes:
-                DomainMailbox.create(domain_id=custom_domain.id, mailbox_id=mailbox.id)
-
-            Session.commit()
-            flash(f"{custom_domain.domain} mailboxes has been updated", "success")
+            if result.success:
+                flash(f"{custom_domain.domain} mailboxes has been updated", "success")
+            else:
+                flash(result.reason.value, "warning")
 
             return redirect(
                 url_for("dashboard.domain_detail", custom_domain_id=custom_domain.id)
@@ -279,16 +271,8 @@ def domain_detail(custom_domain_id):
 
         elif request.form.get("form-name") == "delete":
             name = custom_domain.domain
-            LOG.d("Schedule deleting %s", custom_domain)
 
-            # Schedule delete domain job
-            LOG.w("schedule delete domain job for %s", custom_domain)
-            Job.create(
-                name=JOB_DELETE_DOMAIN,
-                payload={"custom_domain_id": custom_domain.id},
-                run_at=arrow.now(),
-                commit=True,
-            )
+            delete_custom_domain(custom_domain)
 
             flash(
                 f"{name} scheduled for deletion."
@@ -371,6 +355,10 @@ class AutoCreateRuleForm(FlaskForm):
         "regex", validators=[validators.DataRequired(), validators.Length(max=128)]
     )
 
+    display_name = StringField(
+        "display name", validators=[validators.Optional(), validators.Length(max=128)]
+    )
+
     order = IntegerField(
         "order",
         validators=[validators.DataRequired(), validators.NumberRange(min=0, max=100)],
@@ -389,7 +377,7 @@ class AutoCreateTestForm(FlaskForm):
 @login_required
 def domain_detail_auto_create(custom_domain_id):
     custom_domain: CustomDomain = CustomDomain.get(custom_domain_id)
-    mailboxes = current_user.mailboxes()
+    mailboxes = [mb for mb in current_user.mailboxes() if not mb.is_admin_disabled()]
     new_auto_create_rule_form = AutoCreateRuleForm()
 
     auto_create_test_form = AutoCreateTestForm()
@@ -434,6 +422,17 @@ def domain_detail_auto_create(custom_domain_id):
                                     custom_domain_id=custom_domain.id,
                                 )
                             )
+                        if mailbox.is_admin_disabled():
+                            flash(
+                                "Cannot assign admin-disabled mailbox. Please contact support.",
+                                "error",
+                            )
+                            return redirect(
+                                url_for(
+                                    "dashboard.domain_detail_auto_create",
+                                    custom_domain_id=custom_domain.id,
+                                )
+                            )
                         mailboxes.append(mailbox)
 
                     if not mailboxes:
@@ -459,10 +458,18 @@ def domain_detail_auto_create(custom_domain_id):
                             )
                         )
 
+                    display_name = None
+                    if new_auto_create_rule_form.display_name.data:
+                        raw_display = new_auto_create_rule_form.display_name.data
+                        display_name = (
+                            raw_display.replace("\r", " ").replace("\n", " ").strip()
+                        )
+
                     rule = AutoCreateRule.create(
                         custom_domain_id=custom_domain.id,
                         order=int(new_auto_create_rule_form.order.data),
                         regex=new_auto_create_rule_form.regex.data,
+                        display_name=display_name or None,
                         flush=True,
                     )
 

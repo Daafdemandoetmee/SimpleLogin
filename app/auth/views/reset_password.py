@@ -1,5 +1,3 @@
-import uuid
-
 from flask import request, flash, render_template, url_for, g
 from flask_wtf import FlaskForm
 from wtforms import StringField, validators
@@ -8,7 +6,10 @@ from app.auth.base import auth_bp
 from app.auth.views.login_utils import after_login
 from app.db import Session
 from app.extensions import limiter
-from app.models import ResetPasswordCode
+from app.models import ResetPasswordCode, EmailChange
+from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
+from app.user_settings import regenerate_user_alternative_id
+from app.models import MfaBrowser, ApiKey
 
 
 class ResetPasswordForm(FlaskForm):
@@ -55,16 +56,30 @@ def reset_password():
 
         user.set_password(new_password)
 
+        # Delete all API keys to invalidate existing sessions
+        ApiKey.delete_all(user.id)
+
         flash("Your new password has been set", "success")
 
         # this can be served to activate user too
         user.activated = True
+        emit_user_audit_log(
+            user=user,
+            action=UserAuditLogAction.ResetPassword,
+            message="User has reset their password",
+        )
 
         # remove all reset password codes
         ResetPasswordCode.filter_by(user_id=user.id).delete()
+        # invalidate pending email change tokens
+        EmailChange.filter_by(user_id=user.id).delete()
 
         # change the alternative_id to log user out on other browsers
-        user.alternative_id = str(uuid.uuid4())
+        # do not update session here to require MFA first
+        regenerate_user_alternative_id(user, update_session=False)
+
+        # Revoke all trusted browser sessions to prevent MFA bypass
+        MfaBrowser.filter_by(user_id=user.id).delete()
 
         Session.commit()
 

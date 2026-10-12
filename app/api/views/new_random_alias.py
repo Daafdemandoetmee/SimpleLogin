@@ -19,8 +19,8 @@ from app.utils import convert_to_id
 
 
 @api_bp.route("/alias/random/new", methods=["POST"])
-@limiter.limit(ALIAS_LIMIT)
 @require_api_auth
+@limiter.limit(ALIAS_LIMIT)
 @parallel_limiter.lock(name="alias_creation")
 def new_random_alias():
     """
@@ -67,7 +67,7 @@ def new_random_alias():
 
         # cannot use this alias as it belongs to another user
         if alias and not alias.user_id == user.id:
-            LOG.d("%s belongs to another user", alias)
+            LOG.i(f"User {user} tried to create an alias that belongs to another user")
             alias = None
         elif alias and alias.user_id == user.id:
             # make sure alias was created for this website
@@ -88,6 +88,7 @@ def new_random_alias():
                     mailbox_id=user.default_mailbox_id,
                     commit=True,
                 )
+                LOG.i(f"User {user} created random alias {alias} via API")
             except AliasInTrashError:
                 LOG.i("Alias %s is in trash", suggested_alias)
                 alias = None
@@ -101,10 +102,14 @@ def new_random_alias():
             elif mode == "uuid":
                 scheme = AliasGeneratorEnum.uuid.value
             else:
+                LOG.i(
+                    f"User {user} tried to create a random alias with invalid word or uuid"
+                )
                 return jsonify(error=f"{mode} must be either word or uuid"), 400
 
         alias = Alias.create_new_random(user=user, scheme=scheme, note=note)
         Session.commit()
+        LOG.i(f"User {user} created random alias {alias} via API")
 
     if hostname and not AliasUsedOn.get_by(alias_id=alias.id, hostname=hostname):
         AliasUsedOn.create(

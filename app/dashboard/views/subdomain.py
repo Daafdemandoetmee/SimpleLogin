@@ -11,6 +11,7 @@ from app.dashboard.base import dashboard_bp
 from app.errors import SubdomainInTrashError
 from app.log import LOG
 from app.models import CustomDomain, Mailbox, SLDomain
+from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
 
 # Only lowercase letters, numbers, dashes (-)  are currently supported
 _SUBDOMAIN_PATTERN = r"[0-9a-z-]{1,}"
@@ -92,7 +93,7 @@ def subdomain_route():
                 try:
                     new_custom_domain = CustomDomain.create(
                         is_sl_subdomain=True,
-                        catch_all=True,  # by default catch-all is enabled
+                        catch_all=False,  # by default catch-all is disabled
                         domain=full_domain,
                         user_id=current_user.id,
                         verified=True,
@@ -100,6 +101,12 @@ def subdomain_route():
                         spf_verified=True,
                         dmarc_verified=False,  # wildcard DNS does not work for DMARC
                         ownership_verified=True,
+                        commit=True,
+                    )
+                    emit_user_audit_log(
+                        user=current_user,
+                        action=UserAuditLogAction.CreateCustomDomain,
+                        message=f"Create subdomain {new_custom_domain.id} ({full_domain})",
                         commit=True,
                     )
                 except SubdomainInTrashError:

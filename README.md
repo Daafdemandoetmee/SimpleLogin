@@ -84,7 +84,7 @@ For email gurus, we have chosen 1024 key length instead of 2048 for DNS simplici
 
 ### DNS
 
-Please note that DNS changes could take up to 24 hours to propagate. In practice, it's a lot faster though (~1 minute or so in our test). In DNS setup, we usually use domain with a trailing dot (`.`) at the end to to force using absolute domain.
+Please note that DNS changes could take up to 24 hours to propagate. In practice, it's a lot faster though (~1 minute or so in our test). In DNS setup, we usually use domain with a trailing dot (`.`) at the end to force using absolute domain.
 
 
 #### MX record
@@ -329,7 +329,11 @@ smtpd_recipient_restrictions =
    reject_unknown_recipient_domain,
    permit_mynetworks,
    reject_unauth_destination,
-   reject_rbl_client zen.spamhaus.org,
+   reject_rbl_client zen.spamhaus.org=127.0.0.[2..11],
+   reject_rhsbl_sender dbl.spamhaus.org=127.0.1.[2..99],
+   reject_rhsbl_helo dbl.spamhaus.org=127.0.1.[2..99],
+   reject_rhsbl_reverse_client dbl.spamhaus.org=127.0.1.[2..99],
+   warn_if_reject reject_rbl_client zen.spamhaus.org=127.255.255.[1..255],
    reject_rbl_client bl.spamcop.net,
    permit
 ```
@@ -541,7 +545,7 @@ exit
 
 Once you've created all your desired login accounts, add these lines to `/simplelogin.env` to disable further registrations:
 
-```
+```.env
 DISABLE_REGISTRATION=1
 DISABLE_ONBOARDING=true
 ```
@@ -565,6 +569,7 @@ Below are pointers to different topics:
 - [Upgrade existing SimpleLogin installation](docs/upgrade.md)
 - [Enforce SPF](docs/enforce-spf.md)
 - [Postfix TLS](docs/postfix-tls.md)
+- [Postfix - DNSBL with Spamhaus](docs/spamhaus-dqs.md)
 
 ## ❤️ Contributors
 

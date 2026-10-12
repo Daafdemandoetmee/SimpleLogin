@@ -4,43 +4,48 @@ WORKDIR /code
 COPY ./static/package*.json /code/static/
 RUN cd /code/static && npm ci
 
-# Main image
-FROM python:3.10
+FROM --platform=linux/amd64 ubuntu:22.04
+
+ARG UV_VERSION="0.10.12"
+ARG UV_HASH="ec72570c9d1f33021aa80b176d7baba390de2cfeb1abcbefca346d563bf17484"
 
 # Keeps Python from generating .pyc files in the container
-ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONDONTWRITEBYTECODE=1
 # Turns off buffering for easier container logging
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONUNBUFFERED=1
 
-# Add poetry to PATH
-ENV PATH="${PATH}:/root/.local/bin"
 
 WORKDIR /code
 
-# Copy poetry files
-COPY poetry.lock pyproject.toml ./
+# Copy dependency files
+COPY pyproject.toml uv.lock .python-version ./
 
-# Install and setup poetry
-RUN pip install -U pip \
-    && apt-get update \
-    && apt install -y curl netcat-traditional gcc python3-dev gnupg git libre2-dev cmake ninja-build\
-    && curl -sSL https://install.python-poetry.org | python3 - \
-    # Remove curl and netcat from the image
-    && apt-get purge -y curl netcat-traditional \
-    # Run poetry
-    && poetry config virtualenvs.create false \
-    && poetry install  --no-interaction --no-ansi --no-root \
-    # Clear apt cache \
-    && apt-get purge -y libre2-dev cmake ninja-build\
+# Install deps
+RUN apt-get update \
+    && apt-get install -y curl netcat-traditional gcc python3-dev gnupg git libre2-dev build-essential pkg-config cmake ninja-build bash clang \
+    && curl -sSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" > uv.tar.gz \
+    && echo "${UV_HASH}  uv.tar.gz" | sha256sum -c - \
+    && tar xf uv.tar.gz -C /tmp/ \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/bin/uv \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/bin/uvx \
+    && rm -rf /tmp/uv* \
+    && rm -f uv.tar.gz \
+    && uv python install `cat .python-version` \
+    && export CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    && uv sync --locked \
+    && apt-get autoremove -y \
+    && apt-get purge -y curl netcat-traditional build-essential pkg-config cmake ninja-build python3-dev clang\
+    && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy code
+COPY . .
 
 # copy npm packages
 COPY --from=npm /code /code
 
-# copy everything else into /code
-COPY . .
-
+ENV PATH="/code/.venv/bin:$PATH"
 EXPOSE 7777
 
 #gunicorn wsgi:app -b 0.0.0.0:7777 -w 2 --timeout 15 --log-level DEBUG

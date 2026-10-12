@@ -1,9 +1,10 @@
+from typing import Optional
+
 import requests
 from flask import request, session, redirect, flash, url_for
 from flask_limiter.util import get_remote_address
 from flask_login import current_user
 from requests_oauthlib import OAuth2Session
-from typing import Optional
 
 from app.auth.base import auth_bp
 from app.auth.views.login_utils import after_login
@@ -15,15 +16,16 @@ from app.config import (
     PROTON_EXTRA_HEADER_VALUE,
     PROTON_VALIDATE_CERTS,
     URL,
+    ALLOWED_OAUTH_SCHEMES,
 )
 from app.log import LOG
 from app.models import ApiKey, User
-from app.proton.proton_client import HttpProtonClient, convert_access_token
 from app.proton.proton_callback_handler import (
     ProtonCallbackHandler,
     Action,
 )
-from app.proton.utils import get_proton_partner
+from app.proton.proton_client import HttpProtonClient, convert_access_token
+from app.proton.proton_partner import get_proton_partner
 from app.utils import sanitize_next_url, sanitize_scheme
 
 _authorization_base_url = PROTON_BASE_URL + "/oauth/authorize"
@@ -88,6 +90,9 @@ def proton_login():
 
     scheme = sanitize_scheme(request.args.get("scheme"))
     if scheme:
+        if scheme not in ALLOWED_OAUTH_SCHEMES:
+            flash("Bad OAuth request", "error")
+            return redirect(url_for("auth.login"))
         session["oauth_scheme"] = scheme
     elif "oauth_scheme" in session:
         del session["oauth_scheme"]
@@ -165,14 +170,20 @@ def proton_callback():
 
     next_url = session.get("oauth_next")
     if action == Action.Login:
+        LOG.info("Handing login action after login with proton")
         res = handler.handle_login(proton_partner)
     elif action == Action.Link:
+        LOG.info("Handing link action after login with proton")
         res = handler.handle_link(current_user, proton_partner)
     else:
         raise Exception(f"Unknown Action: {action.name}")
 
     if res.flash_message is not None:
         flash(res.flash_message, res.flash_category)
+
+    if res.user is None:
+        LOG.warning("No user after login with proton. Redirecting to auth.login")
+        return redirect(url_for("auth.login"))
 
     oauth_scheme = session.get("oauth_scheme")
     if session.get("oauth_mode", "session") == "apikey":

@@ -9,7 +9,7 @@
     if (window.Paddle === undefined) {
       console.log("cannot load Paddle from CDN");
       // split string to avoid djlint incorrectly formatting the file
-      document.write('<' + 'script src="/static/vendor/paddle.js"><\/script' + '>');
+      document.write('<' + 'script src="/static/vendor/paddle.js"><\/script ' + '>');
     }
   </script>
   <style type="text/css">
@@ -57,24 +57,19 @@
 {% endblock %}
 {% block default_content %}
 
-  {% if NOW.timestamp < 1701475201 %}
+  {% if NOW.timestamp < 1733184000 %}
 
-    <div class="alert alert-info">
-      Black Friday Deal: 33% off on the yearly plan for the <b>first</b> year ($20 instead of $30).
+    <div class="alert alert-primary">
+      Lifetime deal for SimpleLogin Premium and Proton Pass Plus for $199
+      <a class="btn btn-primary"
+         href="https://proton.me/pass/black-friday"
+         target="_blank">Buy now</a>
       <br>
-      Please use this coupon code
-      <em data-toggle="tooltip"
-          title="Click to copy"
-          class="clipboard"
-          data-clipboard-text="BF2023">BF2023</em> during the checkout.
-      <br>
-      <img src="/static/images/coupon.png" class="m-2" style="max-width: 300px">
-      <br>
-      Available until December 1, 2023.
+      Available until December 3, 2024.
     </div>
   {% endif %}
   <div class="pb-8">
-    <div class="text-center mx-md-auto mb-8 mt-6">
+    <div class="text-center mx-md-auto mb-4 mt-4">
       <h1>Upgrade to unlock premium features</h1>
     </div>
     {% if manual_sub %}
@@ -126,6 +121,11 @@
          aria-selected="true">Yearly<span class="badge badge-success position-absolute tab-yearly__badge"
       style="font-size: 12px">Save $18</span></a>
     </div>
+    <div class="alert alert-info">
+      <span class="badge badge-success">new</span> SimpleLogin Premium now includes Proton Pass premium features.
+      <a href="https://simplelogin.io/blog/sl-premium-including-pass-plus/"
+         target="_blank">Learn more ↗</a>
+    </div>
     <div class="tab-content mb-8">
       <!-- monthly tab content -->
       <div class="tab-pane"
@@ -144,9 +144,7 @@
                     {% set sub = current_user.get_paddle_subscription() %}
                     <button class="{{ 'invisible' if sub or manual_sub or coinbase_sub }} btn btn-lg btn-outline-secondary w-100 btn-no-pointer"
                             aria-disabled="true"
-                            disabled>
-                      Current plan
-                    </button>
+                            disabled>Current plan</button>
                   </div>
                 </div>
                 <ul class="list-unstyled">
@@ -172,9 +170,7 @@
                   <div class="h3 my-3">$4 / month</div>
                   <div class="text-center mt-4 mb-6">
                     <button class="btn btn-primary btn-lg w-100"
-                            onclick="upgradePaddle({{ PADDLE_MONTHLY_PRODUCT_ID }})">
-                      Upgrade to Premium
-                    </button>
+                            onclick="upgradePaddle({{ PADDLE_MONTHLY_PRODUCT_ID }})">Upgrade to Premium</button>
                   </div>
                 </div>
                 <ul class="list-unstyled">
@@ -222,12 +218,12 @@
               <div class="card card-md flex-grow-1">
                 <div class="card-body">
                   <div class="text-center">
-                    <div class="h3">Proton plan</div>
+                    <div class="h3">Proton Unlimited</div>
                     <div class="h3 my-3">Starts at $12.99 / month</div>
                     <div class="text-center mt-4 mb-6">
                       <a class="btn btn-lg btn-outline-primary w-100"
                          role="button"
-                         href="https://account.proton.me/u/0/mail/upgrade"
+                         href="https://account.proton.me/u/0/pass/upgrade"
                          target="_blank">Upgrade your Proton account</a>
                     </div>
                   </div>
@@ -287,9 +283,7 @@
                     {% set sub = current_user.get_paddle_subscription() %}
                     <button class="{{ 'invisible' if sub or manual_sub or coinbase_sub }} btn btn-lg btn-outline-secondary w-100 btn-no-pointer"
                             aria-disabled="true"
-                            disabled>
-                      Current plan
-                    </button>
+                            disabled>Current plan</button>
                   </div>
                 </div>
                 <ul class="list-unstyled">
@@ -312,12 +306,10 @@
               <div class="card-body">
                 <div class="text-center">
                   <div class="h3">SimpleLogin Premium</div>
-                  <div class="h3 my-3">$30 / year</div>
+                  <div class="h3 my-3">$36 / year</div>
                   <div class="text-center mt-4 mb-6">
                     <button class="btn btn-primary btn-lg w-100"
-                            onclick="upgradePaddle({{ PADDLE_YEARLY_PRODUCT_ID }})">
-                      Upgrade to Premium
-                    </button>
+                            onclick="upgradePaddle({{ PADDLE_YEARLY_PRODUCT_ID }})">Upgrade to Premium</button>
                   </div>
                 </div>
                 <ul class="list-unstyled">
@@ -365,12 +357,12 @@
               <div class="card card-md flex-grow-1">
                 <div class="card-body">
                   <div class="text-center">
-                    <div class="h3">Proton plan</div>
+                    <div class="h3">Proton Unlimited</div>
                     <div class="h3 my-3">Starts at $119.88 / year</div>
                     <div class="text-center mt-4 mb-6">
                       <a class="btn btn-lg btn-outline-primary w-100"
                          role="button"
-                         href="https://account.proton.me/u/0/mail/upgrade"
+                         href="https://account.proton.me/u/0/pass/upgrade"
                          target="_blank">Upgrade your Proton account</a>
                     </div>
                   </div>
@@ -447,18 +439,10 @@
                 We use <a href="https://paddle.com" target="_blank" rel="noopener noreferrer">Paddle <i class="fe fe-external-link"></i></a> by default for handling payments via credit cards and PayPal. Paddle currently supports the following payment methods:
               </p>
               <ul>
-                <li>
-                  Cards (including Mastercard, Visa, Maestro, American Express, Discover, Diners Club, JCB, UnionPay, and Mada)
-                </li>
-                <li>
-                  PayPal
-                </li>
-                <li>
-                  Apple Pay
-                </li>
-                <li>
-                  Wire Transfers (ACH/SEPA/BACS)
-                </li>
+                <li>Cards (including Mastercard, Visa, Maestro, American Express, Discover, Diners Club, JCB, UnionPay, and Mada)</li>
+                <li>PayPal</li>
+                <li>Apple Pay</li>
+                <li>Wire Transfers (ACH/SEPA/BACS)</li>
               </ul>
               <p>
                 More information can be found on
@@ -468,29 +452,6 @@
                   Paddle supported payment methods <i class="fe fe-external-link"></i>
                 </a>.
               </p>
-              <hr />
-              <p>
-                Furthermore we also support cryptocurrencies for the yearly plan via
-                <a href="https://commerce.coinbase.com"
-                   target="_blank"
-                   rel="noopener noreferrer">
-                  Coinbase Commerce <i class="fe fe-external-link"></i>
-                </a>, which currently supports Bitcoin, Bitcoin Cash, DAI, ApeCoin, Dogecoin, Ethereum, Litecoin, SHIBA INU, Tether and USD Coin.
-              </p>
-              <p>
-                In the future, we are going to support Monero as well. In the meantime, please send us an email at <a href="mailto:support@simplelogin.zendesk.com" target="_blank">support@simplelogin.zendesk.com</a> if you want to use this cryptocurrency.
-              </p>
-              <div class="d-flex justify-content-center">
-                <a class="btn btn-outline-primary text-center"
-                   href="{{ url_for('dashboard.coinbase_checkout_route') }}"
-                   target="_blank"
-                   rel="noopener noreferrer">
-                  Upgrade to Premium - cryptocurrency
-                  <br />
-                  $30 / year
-                  <i class="fe fe-external-link"></i>
-                </a>
-              </div>
             </div>
           </div>
         </div>
@@ -520,7 +481,7 @@
             <div class="card-body">
               <p>
                 To redeem or buy a coupon, please go to the
-                <a href="{{ url_for('dashboard.coupon_route') }}">coupon page</a>. The coupon code can be used by you or given to someone as a gift.
+                <a href="{{ url_for("dashboard.coupon_route") }}">coupon page</a>. The coupon code can be used by you or given to someone as a gift.
               </p>
             </div>
           </div>
@@ -554,18 +515,12 @@
                 sending emails. Concretely:
               </p>
               <ul>
-                <li>
-                  All aliases/domains/directories/mailboxes you have created are kept and continue working normally.
-                </li>
-                <li>
-                  You cannot create new aliases if you exceed the free plan limit, i.e. have more than 10 aliases.
-                </li>
+                <li>All aliases/domains/directories/mailboxes you have created are kept and continue working normally.</li>
+                <li>You cannot create new aliases if you exceed the free plan limit, i.e. have more than 10 aliases.</li>
                 <li>
                   As features like catch-all or directory allow you to create aliases on-the-fly, those aliases cannot be automatically created if you have more than 10 aliases.
                 </li>
-                <li>
-                  You cannot add new domain, directory or mailbox.
-                </li>
+                <li>You cannot add new domain, directory or mailbox.</li>
               </ul>
               <p>
                 For example, if you have 100 aliases by the time your subscription ends, these 100 aliases will continue receiving and sending emails normally. You cannot however create new aliases.
@@ -630,22 +585,14 @@
                aria-labelledby="pricing-faq-question-discounts"
                data-parent="#pricing-faq">
             <div class="card-body">
-              <p>
-                We offer important discounts or free premium for:
-              </p>
+              <p>We offer important discounts or free premium for:</p>
               <ul>
-                <li>
-                  students, professors or technical staffs working at an educational institute
-                </li>
-                <li>
-                  activists, dissidents or journalists
-                </li>
-                <li>
-                  charity organizations
-                </li>
+                <li>students, professors or technical staffs working at an educational institute</li>
+                <li>activists, dissidents or journalists</li>
+                <li>charity organizations</li>
               </ul>
               <p>
-                Please send us an email at <a href="mailto:support@simplelogin.zendesk.com" target="_blank">support@simplelogin.zendesk.com</a> for more info.
+                Please send us an email at <a href="mailto:simplelogin@support.proton.me" target="_blank">simplelogin@support.proton.me</a> for more info.
               </p>
               <p>
                 We used to offer free premium accounts for students but this program ended at June 17 2021. Please note this doesn't affect existing accounts who have already benefited from the program or requests sent before this date.
@@ -677,9 +624,7 @@
                aria-labelledby="pricing-faq-question-refund"
                data-parent="#pricing-faq">
             <div class="card-body">
-              <p>
-                No we don't have a refund policy because SimpleLogin has a trial period where you can try all premium features.
-              </p>
+              <p>No we don't have a refund policy because SimpleLogin has a trial period where you can try all premium features.</p>
             </div>
           </div>
         </div>
@@ -708,7 +653,7 @@
                data-parent="#pricing-faq">
             <div class="card-body">
               <p>
-                No we don't have a family plan but offer 30% reduction for additional subscriptions. Please contact us at <a href="mailto:support@simplelogin.zendesk.com" target="_blank">support@simplelogin.zendesk.com</a> for more information.
+                No we don't have a family plan but offer 30% reduction for additional subscriptions. Please contact us at <a href="mailto:simplelogin@support.proton.me" target="_blank">simplelogin@support.proton.me</a> for more information.
               </p>
             </div>
           </div>
@@ -738,7 +683,9 @@
                data-parent="#pricing-faq">
             <div class="card-body">
               <p>
-                Yes you can also buy SimpleLogin subscription coupon via <a href="https://proxysto.re/en/index.html" target="_blank">ProxyStore <i class="fe fe-external-link"></i></a>, our official reseller.
+                Yes you can also buy SimpleLogin subscription coupon via
+                <a href="https://digitalgoods.proxysto.re/en" target="_blank">ProxyStore <i class="fe fe-external-link"></i></a>,
+                our official reseller. They support Monero, Bitcoin, Cash and more.
               </p>
             </div>
           </div>
@@ -754,7 +701,7 @@
       Paddle.Checkout.open({
         product: productId,
         success: "{{ success_url }}",
-        passthrough: "{\"user_id\": {{current_user.id}} }"
+        passthrough: {{ paddle_passthrough|tojson }}
       });
     }
 

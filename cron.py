@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 import urllib.parse
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import arrow
 import requests
@@ -15,13 +15,11 @@ from app import s3, config
 from app.alias_utils import nb_email_log_for_mailbox
 from app.api.views.apple import verify_receipt
 from app.db import Session
-from app.dns_utils import get_mx_domains, is_mx_equivalent
 from app.email_utils import (
     send_email,
     send_trial_end_soon_email,
     render,
     email_can_be_used_as_mailbox,
-    send_email_with_rate_control,
     get_email_domain_part,
 )
 from app.email_validation import is_valid_email, normalize_reply_email
@@ -57,10 +55,16 @@ from app.models import (
     PartnerUser,
     ApiToCookieToken,
 )
-from app.pgp_utils import load_public_key_and_check, PGPException
-from app.proton.utils import get_proton_partner
+from app.pgp_utils import load_public_key_and_check, PGPException, create_pgp_context
+from app.proton.proton_partner import get_proton_partner
+from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
 from app.utils import sanitize_email
 from server import create_light_app
+from tasks.check_custom_domains import check_all_custom_domains
+from tasks.clean_alias_audit_log import cleanup_alias_audit_log
+from tasks.clean_user_audit_log import cleanup_user_audit_log
+from tasks.cleanup_alias import cleanup_alias
+from tasks.cleanup_expired_oauth_token import cleanup_expired_oauth_tokens
 from tasks.cleanup_old_imports import cleanup_old_imports
 from tasks.cleanup_old_jobs import cleanup_old_jobs
 from tasks.cleanup_old_notifications import cleanup_old_notifications
@@ -149,6 +153,11 @@ def delete_refused_emails():
     LOG.d("Finish delete_refused_emails")
 
 
+def _has_active_partner_subscription(user: User) -> bool:
+    partner_sub = PartnerSubscription.find_by_user_id(user.id)
+    return partner_sub is not None and partner_sub.is_active()
+
+
 def notify_premium_end():
     """sent to user who has canceled their subscription and who has their subscription ending soon"""
     for sub in Subscription.filter_by(cancelled=True).all():
@@ -162,23 +171,28 @@ def notify_premium_end():
             if user.lifetime:
                 continue
 
+            if _has_active_partner_subscription(user):
+                LOG.d("%s has an active partner subscription", user)
+                continue
+
             LOG.d(f"Send subscription ending soon email to user {user}")
 
-            send_email(
-                user.email,
-                "Your subscription will end soon",
-                render(
-                    "transactional/subscription-end.txt",
-                    user=user,
-                    next_bill_date=sub.next_bill_date.strftime("%Y-%m-%d"),
-                ),
-                render(
-                    "transactional/subscription-end.html",
-                    user=user,
-                    next_bill_date=sub.next_bill_date.strftime("%Y-%m-%d"),
-                ),
-                retries=3,
-            )
+            if user.can_send_or_receive():
+                send_email(
+                    user.email,
+                    "Your subscription will end soon",
+                    render(
+                        "transactional/subscription-end.txt",
+                        user=user,
+                        next_bill_date=sub.next_bill_date.strftime("%Y-%m-%d"),
+                    ),
+                    render(
+                        "transactional/subscription-end.html",
+                        user=user,
+                        next_bill_date=sub.next_bill_date.strftime("%Y-%m-%d"),
+                    ),
+                    retries=3,
+                )
 
 
 def notify_manual_sub_end():
@@ -220,24 +234,28 @@ def notify_manual_sub_end():
                     LOG.d("%s has a active Apple subscription", user)
                     continue
 
-            LOG.d("Remind user %s that their manual sub is ending soon", user)
-            send_email(
-                user.email,
-                "Your subscription will end soon",
-                render(
-                    "transactional/manual-subscription-end.txt",
-                    user=user,
-                    manual_sub=manual_sub,
-                ),
-                render(
-                    "transactional/manual-subscription-end.html",
-                    user=user,
-                    manual_sub=manual_sub,
-                ),
-                retries=3,
-            )
+            if _has_active_partner_subscription(user):
+                LOG.d("%s has an active partner subscription", user)
+                continue
 
-    extend_subscription_url = config.URL + "/dashboard/coinbase_checkout"
+            LOG.d("Remind user %s that their manual sub is ending soon", user)
+            if user.can_send_or_receive():
+                send_email(
+                    user.email,
+                    "Your subscription will end soon",
+                    render(
+                        "transactional/manual-subscription-end.txt",
+                        user=user,
+                        manual_sub=manual_sub,
+                    ),
+                    render(
+                        "transactional/manual-subscription-end.html",
+                        user=user,
+                        manual_sub=manual_sub,
+                    ),
+                    retries=3,
+                )
+
     for coinbase_subscription in CoinbaseSubscription.all():
         need_reminder = False
         if (
@@ -258,30 +276,43 @@ def notify_manual_sub_end():
             if user.lifetime:
                 continue
 
+            if _has_active_partner_subscription(user):
+                LOG.d("%s has an active partner subscription", user)
+                continue
+
             LOG.d(
                 "Remind user %s that their coinbase subscription is ending soon", user
             )
-            send_email(
-                user.email,
-                "Your SimpleLogin subscription will end soon",
-                render(
-                    "transactional/coinbase/reminder-subscription.txt",
-                    coinbase_subscription=coinbase_subscription,
-                    extend_subscription_url=extend_subscription_url,
-                ),
-                render(
-                    "transactional/coinbase/reminder-subscription.html",
-                    coinbase_subscription=coinbase_subscription,
-                    extend_subscription_url=extend_subscription_url,
-                ),
-                retries=3,
-            )
+            if user.can_send_or_receive():
+                send_email(
+                    user.email,
+                    "Your SimpleLogin subscription will end soon",
+                    render(
+                        "transactional/coinbase/reminder-subscription.txt",
+                        user=user,
+                        coinbase_subscription=coinbase_subscription,
+                    ),
+                    render(
+                        "transactional/coinbase/reminder-subscription.html",
+                        user=user,
+                        coinbase_subscription=coinbase_subscription,
+                    ),
+                    retries=3,
+                )
 
 
 def poll_apple_subscription():
     """Poll Apple API to update AppleSubscription"""
-    # todo: only near the end of the subscription
-    for apple_sub in AppleSubscription.all():
+    for apple_sub in (
+        AppleSubscription.filter(
+            AppleSubscription.expires_date < arrow.now().shift(days=15)
+        )
+        .enable_eagerloads(False)
+        .yield_per(100)
+    ):
+        if not apple_sub.is_valid():
+            # Subscription is not valid anymore and hasn't been renewed
+            continue
         if not apple_sub.product_id:
             LOG.d("Ignore %s", apple_sub)
             continue
@@ -820,16 +851,21 @@ def check_mailbox_valid_domain():
 
             # send a warning
             if mailbox.nb_failed_checks == 5:
-                if mailbox.user.email != mailbox.email:
+                if (
+                    mailbox.user.email != mailbox.email
+                    and mailbox.can_send_or_receive()
+                ):
                     send_email(
                         mailbox.user.email,
                         f"Mailbox {mailbox.email} is disabled",
                         render(
                             "transactional/disable-mailbox-warning.txt.jinja2",
+                            user=mailbox.user,
                             mailbox=mailbox,
                         ),
                         render(
                             "transactional/disable-mailbox-warning.html",
+                            user=mailbox.user,
                             mailbox=mailbox,
                         ),
                         retries=3,
@@ -839,7 +875,10 @@ def check_mailbox_valid_domain():
             if mailbox.nb_failed_checks > 10 and nb_email_log > 100:
                 mailbox.disabled = True
 
-                if mailbox.user.email != mailbox.email:
+                if (
+                    mailbox.user.email != mailbox.email
+                    and mailbox.can_send_or_receive()
+                ):
                     send_email(
                         mailbox.user.email,
                         f"Mailbox {mailbox.email} is disabled",
@@ -867,7 +906,7 @@ def check_mailbox_valid_pgp_keys():
     # iterate over id instead of mailbox directly
     # as a mailbox can be deleted in the meantime
     for mailbox_id in mailbox_ids:
-        mailbox = Mailbox.get(mailbox_id)
+        mailbox: Optional[Mailbox] = Mailbox.get(mailbox_id)
         # a mailbox has been deleted
         if not mailbox:
             LOG.d(f"Mailbox {mailbox_id} not found")
@@ -876,67 +915,30 @@ def check_mailbox_valid_pgp_keys():
         LOG.d(f"Checking PGP key for {mailbox}")
 
         try:
-            load_public_key_and_check(mailbox.pgp_public_key)
+            # Create a fresh context for each mailbox check so we don't load all keys onto a single context
+            # that will not use them
+            ctx = create_pgp_context()
+            load_public_key_and_check(mailbox.pgp_public_key, ctx)
         except PGPException:
-            LOG.i(f"{mailbox} PGP key invalid")
-            send_email(
-                mailbox.user.email,
-                f"Mailbox {mailbox.email}'s PGP Key is invalid",
-                render(
-                    "transactional/invalid-mailbox-pgp-key.txt.jinja2",
-                    mailbox=mailbox,
-                ),
-                retries=3,
+            LOG.i(f"{mailbox} PGP key invalid. Disabling PGP for {mailbox}")
+            mailbox.disable_pgp = True
+            emit_user_audit_log(
+                user=mailbox.user,
+                action=UserAuditLogAction.MailboxDisablePgp,
+                message=f"[Cron] Automatically disabled PGP for mailbox {mailbox.id} due to invalid PGP key",
             )
-
-
-def check_custom_domain():
-    LOG.d("Check verified domain for DNS issues")
-
-    for custom_domain in CustomDomain.filter_by(verified=True):  # type: CustomDomain
-        try:
-            check_single_custom_domain(custom_domain)
-        except ObjectDeletedError:
-            LOG.i("custom domain has been deleted")
-
-
-def check_single_custom_domain(custom_domain):
-    mx_domains = get_mx_domains(custom_domain.domain)
-    if not is_mx_equivalent(mx_domains, config.EMAIL_SERVERS_WITH_PRIORITY):
-        user = custom_domain.user
-        LOG.w(
-            "The MX record is not correctly set for %s %s %s",
-            custom_domain,
-            user,
-            mx_domains,
-        )
-
-        custom_domain.nb_failed_checks += 1
-
-        # send alert if fail for 5 consecutive days
-        if custom_domain.nb_failed_checks > 5:
-            domain_dns_url = f"{config.URL}/dashboard/domains/{custom_domain.id}/dns"
-            LOG.w("Alert domain MX check fails %s about %s", user, custom_domain)
-            send_email_with_rate_control(
-                user,
-                config.AlERT_WRONG_MX_RECORD_CUSTOM_DOMAIN,
-                user.email,
-                f"Please update {custom_domain.domain} DNS on SimpleLogin",
-                render(
-                    "transactional/custom-domain-dns-issue.txt.jinja2",
-                    custom_domain=custom_domain,
-                    domain_dns_url=domain_dns_url,
-                ),
-                max_nb_alert=1,
-                nb_day=30,
-                retries=3,
-            )
-            # reset checks
-            custom_domain.nb_failed_checks = 0
-    else:
-        # reset checks
-        custom_domain.nb_failed_checks = 0
-    Session.commit()
+            Session.commit()
+            if mailbox.can_send_or_receive():
+                send_email(
+                    mailbox.user.email,
+                    f"Mailbox {mailbox.email}'s PGP Key is invalid",
+                    render(
+                        "transactional/invalid-mailbox-pgp-key.txt.jinja2",
+                        user=mailbox.user,
+                        mailbox=mailbox,
+                    ),
+                    retries=3,
+                )
 
 
 def delete_old_monitoring():
@@ -959,7 +961,7 @@ def delete_expired_tokens():
     LOG.d("Delete api to cookie tokens older than %s, nb row %s", max_time, nb_row)
 
 
-async def _hibp_check(api_key, queue):
+async def _hibp_check(api_key: str, queue: asyncio.Queue):
     """
     Uses a single API key to check the queue as fast as possible.
 
@@ -978,8 +980,13 @@ async def _hibp_check(api_key, queue):
         if not alias:
             continue
         user = alias.user
-        if user.disabled or not user.is_paid():
+        if user.disabled or not user.is_premium():
             # Mark it as hibp done to skip it as if it had been checked
+            alias.hibp_last_check = arrow.utcnow()
+            Session.commit()
+            continue
+        if alias.is_created_from_partner():
+            # Mark as hibp done
             alias.hibp_last_check = arrow.utcnow()
             Session.commit()
             continue
@@ -1067,9 +1074,11 @@ def get_alias_to_check_hibp(
             ),
             Alias.user_id.notin_(user_ids_to_skip),
             Alias.enabled,
+            Alias.delete_on == None,  # noqa: E711
             Alias.id >= min_alias_id,
             Alias.id < max_alias_id,
             User.disabled == False,  # noqa: E712
+            User.enable_data_breach_check,
             or_(
                 User.lifetime,
                 ManualSubscription.end_at > now,
@@ -1178,6 +1187,8 @@ def notify_hibp():
             .filter(Alias.hibp_breaches.any(), Alias.user_id == user.id)
             .all()
         )
+        if not user.can_send_or_receive():
+            continue
 
         LOG.d(
             "Send new breaches found email to %s for %s breaches aliases",
@@ -1208,7 +1219,7 @@ def notify_hibp():
 
 
 def clear_users_scheduled_to_be_deleted(dry_run=False):
-    users = User.filter(
+    users: List[User] = User.filter(
         and_(
             User.delete_on.isnot(None),
             User.delete_on <= arrow.now().shift(days=-DELETE_GRACE_DAYS),
@@ -1220,6 +1231,11 @@ def clear_users_scheduled_to_be_deleted(dry_run=False):
         )
         if dry_run:
             continue
+        emit_user_audit_log(
+            user=user,
+            action=UserAuditLogAction.DeleteUser,
+            message=f"Delete user {user.id} ({user.email})",
+        )
         User.delete(user.id)
         Session.commit()
 
@@ -1231,6 +1247,26 @@ def delete_old_data():
     cleanup_old_notifications(oldest_valid)
 
 
+def clear_alias_audit_log():
+    oldest_valid = arrow.now().shift(days=-config.AUDIT_LOG_MAX_DAYS)
+    cleanup_alias_audit_log(oldest_valid)
+
+
+def clear_user_audit_log():
+    oldest_valid = arrow.now().shift(days=-config.AUDIT_LOG_MAX_DAYS)
+    cleanup_user_audit_log(oldest_valid)
+
+
+def clear_aliases_pending_to_be_deleted():
+    oldest_valid = arrow.now().shift(days=-config.ALIAS_TRASH_DAYS)
+    cleanup_alias(oldest_valid)
+
+
+def clear_oauth_token_pending_to_be_deleted():
+    oldest_valid = arrow.now()
+    cleanup_expired_oauth_tokens(oldest_valid)
+
+
 if __name__ == "__main__":
     LOG.d("Start running cronjob")
     parser = argparse.ArgumentParser()
@@ -1239,22 +1275,6 @@ if __name__ == "__main__":
         "--job",
         help="Choose a cron job to run",
         type=str,
-        choices=[
-            "stats",
-            "notify_trial_end",
-            "notify_manual_subscription_end",
-            "notify_premium_end",
-            "delete_logs",
-            "delete_old_data",
-            "poll_apple_subscription",
-            "sanity_check",
-            "delete_old_monitoring",
-            "check_custom_domain",
-            "check_hibp",
-            "notify_hibp",
-            "cleanup_tokens",
-            "send_undelivered_mails",
-        ],
     )
     args = parser.parse_args()
     # wrap in an app context to benefit from app setup like database cleanup, sentry integration, etc
@@ -1288,7 +1308,7 @@ if __name__ == "__main__":
             delete_old_monitoring()
         elif args.job == "check_custom_domain":
             LOG.d("Check custom domain")
-            check_custom_domain()
+            check_all_custom_domains()
         elif args.job == "check_hibp":
             LOG.d("Check HIBP")
             asyncio.run(check_hibp())
@@ -1303,4 +1323,16 @@ if __name__ == "__main__":
             load_unsent_mails_from_fs_and_resend()
         elif args.job == "delete_scheduled_users":
             LOG.d("Deleting users scheduled to be deleted")
-            clear_users_scheduled_to_be_deleted(dry_run=True)
+            clear_users_scheduled_to_be_deleted()
+        elif args.job == "clear_alias_audit_log":
+            LOG.d("Clearing alias audit log")
+            clear_alias_audit_log()
+        elif args.job == "clear_user_audit_log":
+            LOG.d("Clearing user audit log")
+            clear_user_audit_log()
+        elif args.job == "clear_alias_delete_on":
+            LOG.d("Clearing aliases pending to be deleted")
+            clear_aliases_pending_to_be_deleted()
+        elif args.job == "clear_expired_oauth_token":
+            LOG.d("Clearing oauth_token entries pending to be deleted")
+            clear_oauth_token_pending_to_be_deleted()

@@ -1,7 +1,12 @@
 import email
 import os
+import time
 from email.message import EmailMessage
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from email.utils import formataddr
+from unittest.mock import patch
 
 import arrow
 import pytest
@@ -9,10 +14,13 @@ import pytest
 from app import config
 from app.config import MAX_ALERT_24H, ROOT_DIR
 from app.db import Session
+from app.dns_utils import InMemoryDNSClient, set_global_dns_client
+from app.email import headers
 from app.email_utils import (
     get_email_domain_part,
     can_create_directory_for_address,
-    email_can_be_used_as_mailbox,
+    email_can_be_used_as_mailbox_with_reason,
+    EmailCannotBeUsedReason,
     delete_header,
     add_or_replace_header,
     send_email_with_rate_control,
@@ -24,6 +32,7 @@ from app.email_utils import (
     encode_text,
     EmailEncoding,
     replace,
+    remove_sender_pgp_key_attachment,
     should_disable,
     decode_text,
     parse_id_from_bounce,
@@ -36,6 +45,10 @@ from app.email_utils import (
     is_invalid_mailbox_domain,
     generate_verp_email,
     get_verp_info_from_email,
+    is_expired_verp_address,
+    get_noreply_address,
+    get_noreply_email,
+    get_noreply_domain,
     sl_formataddr,
 )
 from app.email_validation import is_valid_email, normalize_reply_email
@@ -50,6 +63,8 @@ from app.models import (
     AliasGeneratorEnum,
     SLDomain,
     Mailbox,
+    ForbiddenMxIp,
+    User,
 )
 
 # flake8: noqa: E101, W191
@@ -57,18 +72,21 @@ from tests.utils import (
     login,
     load_eml_file,
     create_new_user,
+    create_partner_linked_user,
     random_email,
     random_domain,
     random_token,
 )
 
-
-def setup_module(module):
-    config.SKIP_MX_LOOKUP_ON_CHECK = True
+dns_client = InMemoryDNSClient()
 
 
-def teardown_module(module):
-    config.SKIP_MX_LOOKUP_ON_CHECK = False
+def setup_module():
+    set_global_dns_client(dns_client)
+
+
+def teardown_module():
+    set_global_dns_client(None)
 
 
 def test_get_email_domain_part():
@@ -77,54 +95,113 @@ def test_get_email_domain_part():
 
 def test_email_belongs_to_alias_domains():
     # default alias domain
-    assert can_create_directory_for_address("ab@sl.local")
-    assert not can_create_directory_for_address("ab@not-exist.local")
+    assert can_create_directory_for_address("ab@sl.lan")
+    assert not can_create_directory_for_address("ab@not-exist.lan")
 
-    assert can_create_directory_for_address("hey@d1.test")
-    assert not can_create_directory_for_address("hey@d3.test")
+    assert can_create_directory_for_address("hey@d1.lan")
+    assert not can_create_directory_for_address("hey@d3.lan")
 
 
-def test_can_be_used_as_personal_email(flask_client):
+def test_cannot_be_used_as_personal_email(flask_client):
+    dns_client.set_mx_records("sl.lan", {10: ["mxdomain.com."]})
+    dns_client.set_mx_records("d1.lan", {10: ["mxdomain.com."]})
+    dns_client.set_mx_records("protonmail.com", {10: ["mxdomain.com."]})
+    dns_client.set_mx_records("gmail.com", {10: ["mxdomain.com."]})
     # default alias domain
-    assert not email_can_be_used_as_mailbox("ab@sl.local")
-    assert not email_can_be_used_as_mailbox("hey@d1.test")
+    assert (
+        EmailCannotBeUsedReason.IsSimpleLoginDomain
+        == email_can_be_used_as_mailbox_with_reason("ab@sl.lan")
+    )
+    assert (
+        EmailCannotBeUsedReason.IsSimpleLoginDomain
+        == email_can_be_used_as_mailbox_with_reason("hey@d1.lan")
+    )
 
-    # custom domain
+    # custom domain as SL domain
+    sl_domain = random_domain()
+    SLDomain.create(domain=sl_domain, flush=True)
+    assert (
+        EmailCannotBeUsedReason.IsSimpleLoginDomain
+        == email_can_be_used_as_mailbox_with_reason(f"hey@{sl_domain}")
+    )
+
+    # custom domain is NOT SL domain
     domain = random_domain()
+    dns_client.set_mx_records(domain, {10: ["mxdomain.com."]})
     user = create_new_user()
-    CustomDomain.create(user_id=user.id, domain=domain, verified=True, commit=True)
-    assert not email_can_be_used_as_mailbox(f"hey@{domain}")
+    CustomDomain.create(
+        user_id=user.id,
+        domain=domain,
+        verified=True,
+        is_sl_subdomain=True,
+        flush=True,
+    )
+    Session.flush()
+    assert (
+        EmailCannotBeUsedReason.IsCustomDomain
+        == email_can_be_used_as_mailbox_with_reason(f"hey@{domain}")
+    )
 
     # disposable domain
     disposable_domain = random_domain()
+    dns_client.set_mx_records(disposable_domain, {10: ["mxdomain.com."]})
     InvalidMailboxDomain.create(domain=disposable_domain, commit=True)
-    assert not email_can_be_used_as_mailbox(f"abcd@{disposable_domain}")
+    assert (
+        EmailCannotBeUsedReason.InvalidMailboxDomain
+        == email_can_be_used_as_mailbox_with_reason(f"abcd@{disposable_domain}")
+    )
     # subdomain will not work
-    assert not email_can_be_used_as_mailbox("abcd@sub.{disposable_domain}")
+    assert (
+        EmailCannotBeUsedReason.InvalidEmailAddress
+        == email_can_be_used_as_mailbox_with_reason("abcd@sub.{disposable_domain}")
+    )
     # valid domains should not be affected
-    assert email_can_be_used_as_mailbox("abcd@protonmail.com")
-    assert email_can_be_used_as_mailbox("abcd@gmail.com")
+    assert email_can_be_used_as_mailbox_with_reason("abcd@protonmail.com") is None
+    assert email_can_be_used_as_mailbox_with_reason("abcd@gmail.com") is None
 
 
 def test_disabled_user_prevents_email_from_being_used_as_mailbox():
-    email = f"user_{random_token(10)}@mailbox.test"
-    assert email_can_be_used_as_mailbox(email)
+    email = f"user_{random_token(10)}@mailbox.lan"
+    dns_client.set_mx_records("mailbox.lan", {10: ["mxdomain.com."]})
+    assert email_can_be_used_as_mailbox_with_reason(email) is None
     user = create_new_user(email)
     user.disabled = True
     Session.flush()
-    assert not email_can_be_used_as_mailbox(email)
+    assert (
+        EmailCannotBeUsedReason.EmailOfDisabledUser
+        == email_can_be_used_as_mailbox_with_reason(email)
+    )
 
 
 def test_disabled_user_with_secondary_mailbox_prevents_email_from_being_used_as_mailbox():
-    email = f"user_{random_token(10)}@mailbox.test"
-    assert email_can_be_used_as_mailbox(email)
+    email = f"user_{random_token(10)}@mailbox.lan"
+    dns_client.set_mx_records("mailbox.lan", {10: ["mxdomain.com."]})
+    assert email_can_be_used_as_mailbox_with_reason(email) is None
     user = create_new_user()
     Mailbox.create(user_id=user.id, email=email)
     Session.flush()
-    assert email_can_be_used_as_mailbox(email)
+    assert email_can_be_used_as_mailbox_with_reason(email) is None
     user.disabled = True
     Session.flush()
-    assert not email_can_be_used_as_mailbox(email)
+    assert (
+        EmailCannotBeUsedReason.MailboxOfDisabledUser
+        == email_can_be_used_as_mailbox_with_reason(email)
+    )
+
+
+def test_mx_invalid_ip():
+    ForbiddenMxIp.filter().delete()
+    invalid_mx_ip = "12.2.23.23"
+    valid_mx_ip = "1.1.1.1"
+    ForbiddenMxIp.create(ip=invalid_mx_ip, flush=True)
+    dns_client.set_mx_records("testdomain.com", {10: ["mxdomain.com."]})
+    dns_client.set_a_record("mxdomain.com", valid_mx_ip)
+    assert email_can_be_used_as_mailbox_with_reason("a@testdomain.com") is None
+    dns_client.set_a_record("mxdomain.com", invalid_mx_ip)
+    assert (
+        EmailCannotBeUsedReason.ForbiddenMxRecordFound
+        == email_can_be_used_as_mailbox_with_reason("a@testdomain.com")
+    )
 
 
 def test_delete_header():
@@ -354,6 +431,33 @@ def test_is_valid_email():
     assert not is_valid_email("emoji👌@gmail.com")
 
 
+def test_add_subject_prefix():
+    msg = email.message_from_string(
+        """Subject: Potato
+Content-Transfer-Encoding: 7bit
+
+hello
+"""
+    )
+    new_msg = add_header(msg, "text header", "html header", subject_prefix="[TEST]")
+    assert "text header" in new_msg.as_string()
+    assert "html header" not in new_msg.as_string()
+    assert new_msg[headers.SUBJECT] == "[TEST] Potato"
+
+
+def test_add_subject_prefix_with_no_header():
+    msg = email.message_from_string(
+        """Content-Transfer-Encoding: 7bit
+
+hello
+"""
+    )
+    new_msg = add_header(msg, "text header", "html header", subject_prefix="[TEST]")
+    assert "text header" in new_msg.as_string()
+    assert "html header" not in new_msg.as_string()
+    assert new_msg[headers.SUBJECT] == "[TEST]"
+
+
 def test_add_header_plain_text():
     msg = email.message_from_string(
         """Content-Type: text/plain; charset=us-ascii
@@ -557,8 +661,8 @@ def test_generate_reply_email_include_sender_in_reverse_alias(flask_client):
 
 
 def test_normalize_reply_email(flask_client):
-    assert normalize_reply_email("re+abcd@sl.local") == "re+abcd@sl.local"
-    assert normalize_reply_email('re+"ab cd"@sl.local') == "re+_ab_cd_@sl.local"
+    assert normalize_reply_email("re+abcd@sl.lan") == "re+abcd@sl.lan"
+    assert normalize_reply_email('re+"ab cd"@sl.lan') == "re+_ab_cd_@sl.lan"
 
 
 def test_get_encoding():
@@ -634,7 +738,7 @@ def test_should_disable(flask_client):
         user_id=user.id,
         alias_id=alias.id,
         website_email="contact@example.com",
-        reply_email="rep@sl.local",
+        reply_email="rep@sl.lan",
         commit=True,
     )
     for _ in range(20):
@@ -667,7 +771,7 @@ def test_should_disable_bounces_every_day(flask_client):
         user_id=user.id,
         alias_id=alias.id,
         website_email="contact@example.com",
-        reply_email="rep@sl.local",
+        reply_email="rep@sl.lan",
         commit=True,
     )
     for i in range(9):
@@ -695,7 +799,7 @@ def test_should_disable_bounces_account(flask_client):
         user_id=user.id,
         alias_id=alias.id,
         website_email="contact@example.com",
-        reply_email="rep@sl.local",
+        reply_email="rep@sl.lan",
         commit=True,
     )
 
@@ -723,7 +827,7 @@ def test_should_disable_bounce_consecutive_days(flask_client):
         user_id=user.id,
         alias_id=alias.id,
         website_email="contact@example.com",
-        reply_email="rep@sl.local",
+        reply_email="rep@sl.lan",
         commit=True,
     )
 
@@ -756,12 +860,21 @@ def test_parse_id_from_bounce():
     assert parse_id_from_bounce("anything+1234+@local") == 1234
 
 
-def test_get_queue_id():
+def test_get_queue_id_esmtps():
+    for id_type in ["SMTP", "ESMTP", "ESMTPA", "ESMTPS"]:
+        msg = email.message_from_string(
+            f"Received: from mail-wr1-x434.google.com (mail-wr1-x434.google.com [IPv6:2a00:1450:4864:20::434])\r\n\t(using TLSv1.3 with cipher TLS_AES_128_GCM_SHA256 (128/128 bits))\r\n\t(No client certificate requested)\r\n\tby mx1.simplelogin.co (Postfix) with {id_type} id 4FxQmw1DXdz2vK2\r\n\tfor <jglfdjgld@alias.com>; Fri,  4 Jun 2021 14:55:43 +0000 (UTC)"
+        )
+
+        assert get_queue_id(msg) == "4FxQmw1DXdz2vK2", f"Failed for {id_type}"
+
+
+def test_get_queue_id_postfix():
     msg = email.message_from_string(
-        "Received: from mail-wr1-x434.google.com (mail-wr1-x434.google.com [IPv6:2a00:1450:4864:20::434])\r\n\t(using TLSv1.3 with cipher TLS_AES_128_GCM_SHA256 (128/128 bits))\r\n\t(No client certificate requested)\r\n\tby mx1.simplelogin.co (Postfix) with ESMTPS id 4FxQmw1DXdz2vK2\r\n\tfor <jglfdjgld@alias.com>; Fri,  4 Jun 2021 14:55:43 +0000 (UTC)"
+        "Received: by mailin001.somewhere.net (Postfix)\r\n\tid 4Xz5pb2nMszGrqpL; Wed, 27 Nov 2024 17:21:59 +0000 (UTC)'] by mailin001.somewhere.net (Postfix)"
     )
 
-    assert get_queue_id(msg) == "4FxQmw1DXdz2vK2"
+    assert get_queue_id(msg) == "4Xz5pb2nMszGrqpL"
 
 
 def test_get_queue_id_from_double_header():
@@ -820,6 +933,64 @@ def test_generate_verp_email(object_id):
     assert info[1] == object_id
 
 
+def _verp_generated_at(shift_seconds: float) -> str:
+    """a VERP address as it would have been generated shift_seconds from now"""
+    generated_at = time.time() + shift_seconds
+    # patch only for the generation, without disturbing anything the test
+    # itself may have patched
+    with patch.object(time, "time", return_value=generated_at):
+        return generate_verp_email(VerpType.bounce_reply, 100, "somewhere.net")
+
+
+@pytest.mark.parametrize(
+    "age_seconds",
+    [
+        0,
+        3600,
+        config.VERP_MESSAGE_LIFETIME / 2,
+        config.VERP_MESSAGE_LIFETIME - 3600,
+    ],
+)
+def test_verp_email_within_lifetime_is_accepted(age_seconds):
+    verp = _verp_generated_at(-age_seconds)
+    assert get_verp_info_from_email(verp) == (VerpType.bounce_reply, 100)
+
+
+@pytest.mark.parametrize(
+    "age_seconds",
+    [
+        config.VERP_MESSAGE_LIFETIME + 3600,
+        config.VERP_MESSAGE_LIFETIME * 2,
+        # still within the 14 days the email_log row is kept
+        13 * 86400,
+    ],
+)
+def test_verp_email_past_its_lifetime_is_rejected(age_seconds):
+    """correctly signed, but too old to still speak for its email log"""
+    verp = _verp_generated_at(-age_seconds)
+    assert get_verp_info_from_email(verp) is None
+
+
+def test_verp_email_slightly_ahead_of_our_clock_is_accepted():
+    """another host being a bit ahead must not invalidate a fresh address"""
+    verp = _verp_generated_at(600)
+    assert get_verp_info_from_email(verp) == (VerpType.bounce_reply, 100)
+
+
+def test_is_expired_verp_address_tells_ours_apart_from_unknown():
+    """an expired address of ours must not look like an unknown recipient"""
+    assert is_expired_verp_address(_verp_generated_at(-(2 * 86400 + 7 * 86400)))
+    assert not is_expired_verp_address(_verp_generated_at(0))
+    assert not is_expired_verp_address("someone@example.com")
+    assert not is_expired_verp_address("sl.notbase32.notasignature@example.com")
+
+
+def test_expired_verp_address_of_another_secret_is_not_ours():
+    verp = _verp_generated_at(-(2 * 86400 + 7 * 86400))
+    with patch.object(config, "VERP_EMAIL_SECRET", "a" * 40):
+        assert not is_expired_verp_address(verp)
+
+
 def test_generate_verp_email_forward_reply_phase():
     """make sure the verp type is taken into account in verp generation"""
     for phase in [
@@ -856,8 +1027,184 @@ def test_sl_formataddr():
         formataddr(("é", "è@ç.à"))
 
 
+def test_sl_formataddr_removes_linebreaks_from_the_name():
+    """a line break in the name would inject a header in the generated message"""
+    assert (
+        sl_formataddr(("Evil\r\nReply-To: attacker@evil.com", "a@b.c"))
+        == '"Evil Reply-To: attacker@evil.com" <a@b.c>'
+    )
+
+
 def test_add_header_to_invalid_multipart():
     msg = load_eml_file("add_header_multipart.eml")
     msg = add_header(msg, "test", "test")
     data = msg.as_string()
     assert data != ""
+
+
+def test_remove_sender_pgp_key_attachment_publickey_asc():
+    # Main message
+    msg = MIMEMultipart("mixed")
+
+    # PlainText
+    msg.attach(MIMEText("Hello, this is a reply", "plain"))
+
+    # PGP-key attachment
+    pgp_key = MIMEBase("application", "pgp-keys")
+    pgp_key.set_payload(
+        b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----"
+    )
+    pgp_key.add_header(
+        "Content-Disposition", "attachment", filename="publickey - user@example.com.asc"
+    )
+    msg.attach(pgp_key)
+
+    # Verify that the pgp-key attachment gets removed and the plaintext one remains
+    assert len(msg.get_payload()) == 2
+    result = remove_sender_pgp_key_attachment(msg)
+    assert len(result.get_payload()) == 1
+    assert result.get_payload()[0].get_content_type() == "text/plain"
+
+
+def test_remove_sender_pgp_key_attachment_pgp_signature():
+    # Main message with a signature
+    msg = MIMEMultipart("signed", protocol="application/pgp-signature")
+
+    # PlainText
+    msg.attach(MIMEText("Hello, this is a signed reply", "plain"))
+
+    # Signature attachment
+    sig = MIMEBase("application", "pgp-signature")
+    sig.set_payload(b"-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----")
+    sig.add_header("Content-Disposition", "attachment", filename="signature.asc")
+    msg.attach(sig)
+
+    # Verify that the signature attachment gets removed and the plaintext one remains
+    assert len(msg.get_payload()) == 2
+    result = remove_sender_pgp_key_attachment(msg)
+    assert len(result.get_payload()) == 1
+    assert result.get_payload()[0].get_content_type() == "text/plain"
+
+
+def test_remove_sender_pgp_key_attachment_preserves_normal_attachments():
+    # Main message
+    msg = MIMEMultipart("mixed")
+
+    # PlainText
+    msg.attach(MIMEText("Hello with attachment", "plain"))
+
+    # PDF attachment
+    pdf = MIMEBase("application", "pdf")
+    pdf.set_payload(b"fake pdf content")
+    pdf.add_header("Content-Disposition", "attachment", filename="document.pdf")
+    msg.attach(pdf)
+
+    # Verify that no attachment is modified
+    assert len(msg.get_payload()) == 2
+    result = remove_sender_pgp_key_attachment(msg)
+    assert len(result.get_payload()) == 2
+
+
+def test_remove_sender_pgp_key_attachment_removes_both_key_and_signature():
+    # Main message
+    msg = MIMEMultipart("mixed")
+    msg.attach(MIMEText("Hello with PGP", "plain"))
+
+    # PGP Key attachment
+    pgp_key = MIMEBase("application", "pgp-keys")
+    pgp_key.set_payload(b"fake key")
+    pgp_key.add_header(
+        "Content-Disposition", "attachment", filename="publickey - user@proton.me.asc"
+    )
+    msg.attach(pgp_key)
+
+    # PGP Signature attachment
+    sig = MIMEBase("application", "pgp-signature")
+    sig.set_payload(b"fake signature")
+    sig.add_header("Content-Disposition", "attachment", filename="signature.asc")
+    msg.attach(sig)
+
+    # PDF attachment
+    pdf = MIMEBase("application", "pdf")
+    pdf.set_payload(b"real attachment")
+    pdf.add_header("Content-Disposition", "attachment", filename="report.pdf")
+    msg.attach(pdf)
+
+    # Verify that pgp-key and signature get removed, but plaintext and PDF remain
+    assert len(msg.get_payload()) == 4
+    result = remove_sender_pgp_key_attachment(msg)
+    assert len(result.get_payload()) == 2
+    assert result.get_payload()[0].get_content_type() == "text/plain"
+    assert result.get_payload()[1].get_filename() == "report.pdf"
+
+
+def test_remove_sender_pgp_key_attachment_nested_multipart():
+    # Inner message
+    inner = MIMEMultipart("mixed")
+    inner.attach(MIMEText("Inner text", "plain"))
+
+    # PGP Key attached to inner message
+    pgp_key = MIMEBase("application", "pgp-keys")
+    pgp_key.set_payload(b"fake key")
+    pgp_key.add_header(
+        "Content-Disposition", "attachment", filename="publickey - user@pm.me.asc"
+    )
+    inner.attach(pgp_key)
+
+    # Attach inner message to main message (outer)
+    outer = MIMEMultipart("mixed")
+    outer.attach(inner)
+
+    # Verify how the PGP key gets removed but the inner message remains
+    result = remove_sender_pgp_key_attachment(outer)
+    inner_result = result.get_payload()[0]
+    assert len(inner_result.get_payload()) == 1
+    assert inner_result.get_payload()[0].get_content_type() == "text/plain"
+
+
+def test_get_noreply_email_no_user(flask_client):
+    assert get_noreply_email() == config.NOREPLY_EMAIL
+    assert "@" in get_noreply_email()
+    assert "<" not in get_noreply_email()
+
+
+def test_get_noreply_email_non_partner_user(flask_client):
+    user = create_new_user()
+    assert get_noreply_email(user) == config.NOREPLY_EMAIL
+
+
+def test_get_noreply_email_partner_user_uses_partner_noreply(flask_client):
+    user, _ = create_partner_linked_user()
+    with patch.object(config, "PARTNER_NOREPLY_EMAIL", "partner-noreply@partner.lan"):
+        assert get_noreply_email(user) == "partner-noreply@partner.lan"
+
+
+def test_get_noreply_address_returns_formatted(flask_client):
+    with patch.object(config, "NOREPLY", "Leo <leo@nimoy.com>"):
+        addr = get_noreply_address()
+        assert "Leo <leo@nimoy.com>" == addr
+
+
+def test_get_noreply_domain_no_user(flask_client):
+    expected_domain = "asdf.asdf.asdf.acom"
+    with patch.object(config, "NOREPLY_EMAIL", f"aasd.saedf.asdf@{expected_domain}"):
+        domain = get_noreply_domain()
+        assert expected_domain == domain
+
+
+def test_get_noreply_address_partner_user(flask_client):
+    user, _ = create_partner_linked_user()
+    user.flags = user.flags | User.FLAG_CREATED_FROM_PARTNER
+    Session.flush()
+    with patch.object(
+        config, "PARTNER_NOREPLY", '"Partner (noreply)" <partner-noreply@partner.lan>'
+    ):
+        addr = get_noreply_address(user)
+        assert addr == '"Partner (noreply)" <partner-noreply@partner.lan>'
+
+
+def test_get_noreply_domain_partner_user(flask_client):
+    user, _ = create_partner_linked_user()
+    with patch.object(config, "PARTNER_NOREPLY_EMAIL", "partner-noreply@partner.lan"):
+        domain = get_noreply_domain(user)
+        assert domain == "partner.lan"

@@ -12,6 +12,7 @@ from .views import (
     custom_domain,
     alias_contact_manager,
     enter_sudo,
+    enter_admin,
     mfa_setup,
     mfa_cancel,
     fido_setup,
@@ -33,6 +34,7 @@ from .views import (
     notification,
     support,
     account_setting,
+    alias_trash,
 )
 
 __all__ = [
@@ -49,6 +51,7 @@ __all__ = [
     "custom_domain",
     "alias_contact_manager",
     "enter_sudo",
+    "enter_admin",
     "mfa_setup",
     "mfa_cancel",
     "fido_setup",
@@ -70,4 +73,5 @@ __all__ = [
     "notification",
     "support",
     "account_setting",
+    "alias_trash",
 ]

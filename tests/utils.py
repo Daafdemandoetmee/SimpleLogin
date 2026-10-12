@@ -4,18 +4,26 @@ import os
 import random
 import string
 from email.message import EmailMessage
+from time import time
 from typing import Optional, Dict
 
 import jinja2
 from flask import url_for
 
-from app.models import User
+from app.db import Session
+from app.models import User, PartnerUser, UserAliasDeleteAction
+from app.proton.proton_partner import get_proton_partner
+from app.session import SUDO_TIME_KEY, SUDO_USER_ID_KEY
 from app.utils import random_string
 
 
-def create_new_user(email: Optional[str] = None, name: Optional[str] = None) -> User:
+def create_new_user(
+    email: Optional[str] = None,
+    name: Optional[str] = None,
+    alias_delete_action: UserAliasDeleteAction = UserAliasDeleteAction.DeleteImmediately,
+) -> User:
     if not email:
-        email = f"user_{random_token(10)}@mailbox.test"
+        email = f"user_{random_token(10)}@mailbox.lan"
     if not name:
         name = "Test User"
     # new user has a different email address
@@ -26,8 +34,22 @@ def create_new_user(email: Optional[str] = None, name: Optional[str] = None) -> 
         activated=True,
         flush=True,
     )
+    user.alias_delete_action = alias_delete_action
+    Session.flush()
 
     return user
+
+
+def create_partner_linked_user() -> tuple[User, PartnerUser]:
+    user = create_new_user()
+    partner_user = PartnerUser.create(
+        partner_id=get_proton_partner().id,
+        user_id=user.id,
+        external_user_id=random_token(10),
+        flush=True,
+    )
+
+    return user, partner_user
 
 
 def login(flask_client, user: Optional[User] = None) -> User:
@@ -46,8 +68,21 @@ def login(flask_client, user: Optional[User] = None) -> User:
     return user
 
 
+def enter_sudo_mode(flask_client, user: User):
+    """Put the session of flask_client in sudo mode for user"""
+    with flask_client.session_transaction() as session:
+        session[SUDO_TIME_KEY] = int(time())
+        session[SUDO_USER_ID_KEY] = user.id
+
+
+def exit_sudo_mode(flask_client):
+    with flask_client.session_transaction() as session:
+        session.pop(SUDO_TIME_KEY, None)
+        session.pop(SUDO_USER_ID_KEY, None)
+
+
 def random_domain() -> str:
-    return random_token() + ".test"
+    return random_token() + ".lan"
 
 
 def random_token(length: int = 10) -> str:
@@ -76,3 +111,11 @@ def load_eml_file(
 
 def random_email() -> str:
     return "{rand}@{rand}.com".format(rand=random_string(20))
+
+
+def fix_rate_limit_after_request():
+    from flask import g
+    from app.extensions import limiter
+
+    g._rate_limiting_complete = False
+    setattr(g, "%s_rate_limiting_complete" % limiter._key_prefix, False)

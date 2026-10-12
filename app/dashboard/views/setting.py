@@ -14,7 +14,7 @@ from flask_wtf import FlaskForm
 from flask_wtf.file import FileField
 from wtforms import StringField, validators
 
-from app import s3
+from app import s3, user_settings
 from app.config import (
     FIRST_ALIAS_DOMAIN,
     ALIAS_RANDOM_SUFFIX_LENGTH,
@@ -22,7 +22,6 @@ from app.config import (
 )
 from app.dashboard.base import dashboard_bp
 from app.db import Session
-from app.errors import ProtonPartnerNotSetUp
 from app.extensions import limiter
 from app.image_validation import detect_image_format, ImageFormat
 from app.log import LOG
@@ -31,19 +30,17 @@ from app.models import (
     PlanEnum,
     File,
     EmailChange,
-    CustomDomain,
     AliasGeneratorEnum,
     AliasSuffixEnum,
     ManualSubscription,
     SenderFormatEnum,
-    SLDomain,
     CoinbaseSubscription,
     AppleSubscription,
-    PartnerUser,
     PartnerSubscription,
     UnsubscribeBehaviourEnum,
+    UserAliasDeleteAction,
 )
-from app.proton.utils import get_proton_partner
+from app.proton.proton_unlink import can_unlink_proton_account
 from app.utils import (
     random_string,
     CSRFValidationForm,
@@ -57,22 +54,6 @@ class SettingForm(FlaskForm):
 
 class PromoCodeForm(FlaskForm):
     code = StringField("Name", validators=[validators.DataRequired()])
-
-
-def get_proton_linked_account() -> Optional[str]:
-    # Check if the current user has a partner_id
-    try:
-        proton_partner_id = get_proton_partner().id
-    except ProtonPartnerNotSetUp:
-        return None
-
-    # It has. Retrieve the information for the PartnerUser
-    proton_linked_account = PartnerUser.get_by(
-        user_id=current_user.id, partner_id=proton_partner_id
-    )
-    if proton_linked_account is None:
-        return None
-    return proton_linked_account.partner_email
 
 
 def get_partner_subscription_and_name(
@@ -166,44 +147,22 @@ def setting():
             return redirect(url_for("dashboard.setting"))
         elif request.form.get("form-name") == "change-random-alias-default-domain":
             default_domain = request.form.get("random-alias-default-domain")
-
-            if default_domain:
-                sl_domain: SLDomain = SLDomain.get_by(domain=default_domain)
-                if sl_domain:
-                    if sl_domain.premium_only and not current_user.is_premium():
-                        flash("You cannot use this domain", "error")
-                        return redirect(url_for("dashboard.setting"))
-
-                    current_user.default_alias_public_domain_id = sl_domain.id
-                    current_user.default_alias_custom_domain_id = None
-                else:
-                    custom_domain = CustomDomain.get_by(domain=default_domain)
-                    if custom_domain:
-                        # sanity check
-                        if (
-                            custom_domain.user_id != current_user.id
-                            or not custom_domain.verified
-                        ):
-                            LOG.w(
-                                "%s cannot use domain %s", current_user, custom_domain
-                            )
-                            flash(f"Domain {default_domain} can't be used", "error")
-                            return redirect(request.url)
-                        else:
-                            current_user.default_alias_custom_domain_id = (
-                                custom_domain.id
-                            )
-                            current_user.default_alias_public_domain_id = None
-
-            else:
-                current_user.default_alias_custom_domain_id = None
-                current_user.default_alias_public_domain_id = None
+            try:
+                user_settings.set_default_alias_domain(current_user, default_domain)
+            except user_settings.CannotSetAlias as e:
+                flash(e.msg, "error")
+                return redirect(url_for("dashboard.setting"))
 
             Session.commit()
             flash("Your preference has been updated", "success")
             return redirect(url_for("dashboard.setting"))
         elif request.form.get("form-name") == "random-alias-suffix":
-            scheme = int(request.form.get("random-alias-suffix-generator"))
+            try:
+                scheme = int(request.form.get("random-alias-suffix-generator"))
+            except ValueError:
+                flash("Invalid value", "error")
+                return redirect(url_for("dashboard.setting"))
+
             if AliasSuffixEnum.has_value(scheme):
                 current_user.random_alias_suffix = scheme
                 Session.commit()
@@ -226,6 +185,21 @@ def setting():
                 current_user.replace_reverse_alias = False
             Session.commit()
             flash("Your preference has been updated", "success")
+            return redirect(url_for("dashboard.setting"))
+        elif request.form.get("form-name") == "enable_data_breach_check":
+            if not current_user.is_premium():
+                flash("Only premium plan can enable data breach monitoring", "warning")
+                return redirect(url_for("dashboard.setting"))
+            choose = request.form.get("enable_data_breach_check")
+            if choose == "on":
+                LOG.i("User {current_user} has enabled data breach monitoring")
+                current_user.enable_data_breach_check = True
+                flash("Data breach monitoring is enabled", "success")
+            else:
+                LOG.i("User {current_user} has disabled data breach monitoring")
+                current_user.enable_data_breach_check = False
+                flash("Data breach monitoring is disabled", "info")
+            Session.commit()
             return redirect(url_for("dashboard.setting"))
         elif request.form.get("form-name") == "sender-in-ra":
             choose = request.form.get("enable")
@@ -297,6 +271,19 @@ def setting():
             Session.commit()
             flash("Your preference has been updated", "success")
             return redirect(url_for("dashboard.setting"))
+        elif request.form.get("form-name") == "alias-delete-action":
+            action = request.form.get("alias-delete-action")
+            if action == str(UserAliasDeleteAction.MoveToTrash.value):
+                current_user.alias_delete_action = UserAliasDeleteAction.MoveToTrash
+            elif action == str(UserAliasDeleteAction.DeleteImmediately.value):
+                current_user.alias_delete_action = (
+                    UserAliasDeleteAction.DeleteImmediately
+                )
+            else:
+                flash("There was an error. Please try again", "warning")
+                return redirect(url_for("dashboard.setting"))
+            Session.commit()
+            flash("Your preference has been updated", "success")
 
     manual_sub = ManualSubscription.get_by(user_id=current_user.id)
     apple_sub = AppleSubscription.get_by(user_id=current_user.id)
@@ -309,8 +296,6 @@ def setting():
     if partner_sub_name:
         partner_sub, partner_name = partner_sub_name
 
-    proton_linked_account = get_proton_linked_account()
-
     return render_template(
         "dashboard/setting.html",
         csrf_form=csrf_form,
@@ -322,6 +307,7 @@ def setting():
         pending_email=pending_email,
         AliasGeneratorEnum=AliasGeneratorEnum,
         UnsubscribeBehaviourEnum=UnsubscribeBehaviourEnum,
+        UserAliasDeleteAction=UserAliasDeleteAction,
         manual_sub=manual_sub,
         partner_sub=partner_sub,
         partner_name=partner_name,
@@ -331,5 +317,5 @@ def setting():
         FIRST_ALIAS_DOMAIN=FIRST_ALIAS_DOMAIN,
         ALIAS_RAND_SUFFIX_LENGTH=ALIAS_RANDOM_SUFFIX_LENGTH,
         connect_with_proton=CONNECT_WITH_PROTON,
-        proton_linked_account=proton_linked_account,
+        can_unlink_proton_account=can_unlink_proton_account(current_user),
     )

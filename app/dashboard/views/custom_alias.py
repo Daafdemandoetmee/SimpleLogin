@@ -50,7 +50,7 @@ def custom_alias():
             break
 
     csrf_form = CSRFValidationForm()
-    mailboxes = current_user.mailboxes()
+    mailboxes = [mb for mb in current_user.mailboxes() if not mb.is_admin_disabled()]
 
     if request.method == "POST":
         if not csrf_form.validate():
@@ -79,6 +79,12 @@ def custom_alias():
                 or not mailbox.verified
             ):
                 flash("Something went wrong, please retry", "warning")
+                return redirect(request.url)
+            if mailbox.is_admin_disabled():
+                flash(
+                    "Cannot assign admin-disabled mailbox to alias. Please contact support.",
+                    "error",
+                )
                 return redirect(request.url)
             mailboxes.append(mailbox)
 
@@ -126,7 +132,7 @@ def custom_alias():
                 )
                 custom_domain = domain_deleted_alias.domain
                 flash(
-                    f"You have deleted this alias before. You can restore it on "
+                    f"You have deleted this alias before. If you want to re-create it, please delete it from "
                     f"{custom_domain.domain} 'Deleted Alias' page",
                     "error",
                 )
@@ -156,6 +162,9 @@ def custom_alias():
                     )
 
                 Session.commit()
+                LOG.i(
+                    f"User {current_user} has created custom alias {alias} via dashboard"
+                )
                 flash(f"Alias {full_alias} has been created", "success")
 
                 return redirect(url_for("dashboard.index", highlight_alias_id=alias.id))

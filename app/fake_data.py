@@ -33,8 +33,11 @@ from app.models import (
     SLDomain,
     Hibp,
     AliasHibp,
+    PartnerUser,
+    PartnerSubscription,
 )
-from app.pgp_utils import load_public_key
+from app.pgp_utils import load_public_key, create_pgp_context
+from app.proton.proton_partner import get_proton_partner
 
 
 def fake_data():
@@ -87,7 +90,7 @@ def fake_data():
         user_id=user.id,
         alias_id=alias.id,
         website_email="hey@google.com",
-        reply_email="rep@sl.local",
+        reply_email="rep@sl.lan",
         commit=True,
     )
     EmailLog.create(
@@ -131,7 +134,7 @@ def fake_data():
         verified=True,
         pgp_public_key=pgp_public_key,
     )
-    m1.pgp_finger_print = load_public_key(pgp_public_key)
+    m1.pgp_finger_print = load_public_key(pgp_public_key, ctx=create_pgp_context())
     Session.commit()
 
     # example@example.com is in a LOT of data breaches
@@ -163,7 +166,7 @@ def fake_data():
         #         user_id=user.id,
         #         alias_id=a.id,
         #         website_email=f"contact{i}@example.com",
-        #         reply_email=f"rep{i}@sl.local",
+        #         reply_email=f"rep{i}@sl.lan",
         #     )
         #     Session.commit()
         #     for _ in range(3):
@@ -176,13 +179,31 @@ def fake_data():
             Session.commit()
 
     custom_domain1 = CustomDomain.create(user_id=user.id, domain="ab.cd", verified=True)
+    for i in range(26):
+        Alias.create(email=f"cd_{i}@ab.cd", user_id=user.id, mailbox_id=m1.id)
     Session.commit()
 
-    Alias.create(
+    alias = Alias.create(
         user_id=user.id,
         email="first@ab.cd",
         mailbox_id=user.default_mailbox_id,
         custom_domain_id=custom_domain1.id,
+        commit=True,
+    )
+
+    contact = Contact.create(
+        user_id=user.id,
+        alias_id=alias.id,
+        website_email="firstcontact@sl.lan",
+        reply_email="nobody@nowhere.net",
+        commit=True,
+    )
+    EmailLog.create(
+        user_id=user.id,
+        contact_id=contact.id,
+        alias_id=contact.alias_id,
+        refused_email_id=None,
+        bounced=False,
         commit=True,
     )
 
@@ -269,3 +290,48 @@ def fake_data():
     CustomDomain.create(
         user_id=user.id, domain="old.com", verified=True, ownership_verified=True
     )
+
+    # Create a user
+    proton_partner = get_proton_partner()
+    user = User.create(
+        email="test@proton.me",
+        name="Proton test",
+        password="password",
+        activated=True,
+        is_admin=False,
+        intro_shown=True,
+        from_partner=True,
+        flush=True,
+    )
+    pu = PartnerUser.create(
+        user_id=user.id,
+        partner_id=proton_partner.id,
+        partner_email="test@proton.me",
+        external_user_id="DUMMY",
+        flush=True,
+    )
+    PartnerSubscription.create(
+        partner_user_id=pu.id, end_at=arrow.now().shift(years=1, days=1)
+    )
+
+    user = User.create(
+        email="test2@proton.me",
+        name="Proton test 2",
+        password="password",
+        activated=True,
+        is_admin=False,
+        intro_shown=True,
+        from_partner=False,
+        flush=True,
+    )
+    pu = PartnerUser.create(
+        user_id=user.id,
+        partner_id=proton_partner.id,
+        partner_email="test2@proton.me",
+        external_user_id="DUMMY2",
+        flush=True,
+    )
+    PartnerSubscription.create(
+        partner_user_id=pu.id, end_at=arrow.now().shift(years=1, days=1)
+    )
+    Session.commit()

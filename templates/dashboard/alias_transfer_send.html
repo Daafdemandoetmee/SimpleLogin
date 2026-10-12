@@ -11,14 +11,21 @@
         This page allows you to transfer {{ alias.email }} to another person so they can use it to receive and send
         emails.
       </p>
+      {% if alias_used_for_sign_in %}
+
+        <div class="alert alert-warning">
+          This alias has been used to sign in to one or more apps with <b>Sign in with SimpleLogin</b>.
+          If you transfer it, your access to those apps will <strong>not</strong> be transferred: the person receiving
+          this alias will <strong>not</strong> be able to sign in to them as you, and you will need to sign in again
+          with another email address to recover those accounts.
+        </div>
+      {% endif %}
       {% if alias_transfer_url %}
 
         <em data-toggle="tooltip"
             title="Click to copy"
             class="clipboard"
-            data-clipboard-text="{{ alias_transfer_url }}">
-          {{ alias_transfer_url }}
-        </em>
+            data-clipboard-text="{{ alias_transfer_url }}">{{ alias_transfer_url }}</em>
         <p class="mt-5">
           Please copy the transfer URL. <strong>We won't be able to display it again</strong>. If you need to access it again you can generate a new URL.
         </p>

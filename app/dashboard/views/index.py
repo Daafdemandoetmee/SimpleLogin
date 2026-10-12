@@ -3,19 +3,22 @@ from dataclasses import dataclass
 from flask import render_template, request, redirect, url_for, flash
 from flask_login import login_required, current_user
 
-from app import alias_utils, parallel_limiter
+from app import alias_utils, parallel_limiter, alias_delete
 from app.api.serializer import get_alias_infos_with_pagination_v3, get_alias_info_v3
 from app.config import ALIAS_LIMIT, PAGE_LIMIT
+from app.contact_utils import contact_toggle_block
 from app.dashboard.base import dashboard_bp
 from app.db import Session
 from app.extensions import limiter
 from app.log import LOG
 from app.models import (
     Alias,
+    AliasDeleteReason,
     AliasGeneratorEnum,
     User,
     EmailLog,
     Contact,
+    UserAliasDeleteAction,
 )
 from app.utils import CSRFValidationForm
 
@@ -29,7 +32,7 @@ class Stats:
 
 
 def get_stats(user: User) -> Stats:
-    nb_alias = Alias.filter_by(user_id=user.id).count()
+    nb_alias = Alias.filter_by(user_id=user.id, delete_on=None).count()  # noqa : E711
     nb_forward = (
         Session.query(EmailLog)
         .filter_by(user_id=user.id, is_reply=False, blocked=False, bounced=False)
@@ -70,7 +73,10 @@ def index():
 
     page = 0
     if request.args.get("page"):
-        page = int(request.args.get("page"))
+        try:
+            page = int(request.args.get("page"))
+        except ValueError:
+            pass
 
     highlight_alias_id = None
     if request.args.get("highlight_alias_id"):
@@ -143,10 +149,22 @@ def index():
             if request.form.get("form-name") == "delete-alias":
                 LOG.i(f"User {current_user} requested deletion of alias {alias}")
                 email = alias.email
-                alias_utils.delete_alias(alias, current_user)
-                flash(f"Alias {email} has been deleted", "success")
+                alias_delete.delete_alias(
+                    alias, current_user, AliasDeleteReason.ManualAction, commit=True
+                )
+                if (
+                    current_user.alias_delete_action
+                    == UserAliasDeleteAction.MoveToTrash
+                ):
+                    msg = f"Alias {email} has been moved to the trash"
+                else:
+                    msg = f"Alias {email} has been deleted"
+
+                flash(msg, "success")
             elif request.form.get("form-name") == "disable-alias":
-                alias.enabled = False
+                alias_utils.change_alias_status(
+                    alias, enabled=False, message="Set enabled=False from dashboard"
+                )
                 Session.commit()
                 flash(f"Alias {alias.email} has been disabled", "success")
 
@@ -160,7 +178,7 @@ def index():
             )
         )
 
-    mailboxes = current_user.mailboxes()
+    mailboxes = [mb for mb in current_user.mailboxes() if not mb.is_admin_disabled()]
 
     show_intro = False
     if not current_user.intro_shown:
@@ -213,6 +231,7 @@ def index():
         highlight_alias_id=highlight_alias_id,
         query=query,
         AliasGeneratorEnum=AliasGeneratorEnum,
+        UserAliasDeleteAction=UserAliasDeleteAction,
         mailboxes=mailboxes,
         show_intro=show_intro,
         page=page,
@@ -230,14 +249,16 @@ def toggle_contact(contact_id):
     """
     Block/Unblock contact
     """
+    csrf_form = CSRFValidationForm()
+    if not csrf_form.validate():
+        return "Invalid request", 400
+
     contact = Contact.get(contact_id)
 
     if not contact or contact.alias.user_id != current_user.id:
         return "Forbidden", 403
 
-    contact.block_forward = not contact.block_forward
-    Session.commit()
-
+    contact_toggle_block(contact)
     if contact.block_forward:
         toast_msg = f"{contact.website_email} can no longer send emails to {contact.alias.email}"
     else:
@@ -246,5 +267,8 @@ def toggle_contact(contact_id):
         )
 
     return render_template(
-        "partials/toggle_contact.html", contact=contact, toast_msg=toast_msg
+        "partials/toggle_contact.html",
+        contact=contact,
+        toast_msg=toast_msg,
+        csrf_form=csrf_form,
     )

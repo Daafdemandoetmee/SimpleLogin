@@ -22,7 +22,7 @@
           <br />
           The period left in the current subscription isn't taken into account.
           <br />
-          <a href="{{ url_for('dashboard.pricing') }}"
+          <a href="{{ url_for("dashboard.pricing") }}"
              class="btn btn-primary mt-2">Re-subscribe</a>
         </p>
       {% else %}
@@ -43,7 +43,7 @@
           You can change the plan at any moment.
           <br />
           Please note that the new billing cycle starts instantly
-          i.e. you will be charged <b>immediately</b> the annual fee ($30) when switching from monthly plan or vice-versa
+          i.e. you will be charged <b>immediately</b> the annual fee ($36) when switching from monthly plan or vice-versa
           <b>without pro rata computation </b>.
           <br />
           To change the plan you can also cancel the current one and subscribe a new one <b>by the end</b> of this plan.
@@ -51,12 +51,14 @@
 
             <form method="post"
                   onsubmit="return confirm('This will change your current subscription plan, please confirm');">
+              {{ csrf_form.csrf_token }}
               <input type="hidden" name="form-name" value="change-monthly">
               <button class="btn btn-outline-primary mt-2">Change to Monthly Plan</button>
             </form>
           {% else %}
             <form method="post"
                   onsubmit="return confirm('This will change your current subscription plan, please confirm');">
+              {{ csrf_form.csrf_token }}
               <input type="hidden" name="form-name" value="change-yearly">
               <button class="btn btn-outline-primary mt-2">Change to Yearly Plan</button>
             </form>
@@ -68,6 +70,7 @@
           Don't want to protect your inbox anymore?
           <br />
           <form method="post">
+            {{ csrf_form.csrf_token }}
             <input type="hidden" name="form-name" value="cancel">
             <span class="cancel btn btn-outline-danger mt-2">
               Cancel subscription <i class="fe fe-alert-triangle text-danger"></i>

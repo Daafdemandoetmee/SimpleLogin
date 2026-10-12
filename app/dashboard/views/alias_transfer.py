@@ -7,7 +7,8 @@ from flask import render_template, redirect, url_for, flash, request
 from flask_login import login_required, current_user
 
 from app import config
-from app.alias_utils import transfer_alias
+from app.alias_audit_log_utils import emit_alias_audit_log, AliasAuditLogAction
+from app.alias_utils import transfer_alias, alias_used_for_sign_in
 from app.dashboard.base import dashboard_bp
 from app.dashboard.views.enter_sudo import sudo_required
 from app.db import Session
@@ -57,6 +58,12 @@ def alias_transfer_send_route(alias_id):
             transfer_token = f"{alias.id}.{secrets.token_urlsafe(32)}"
             alias.transfer_token = hmac_alias_transfer_token(transfer_token)
             alias.transfer_token_expiration = arrow.utcnow().shift(hours=24)
+
+            emit_alias_audit_log(
+                alias,
+                AliasAuditLogAction.InitiateTransferAlias,
+                "Initiated alias transfer",
+            )
             Session.commit()
             alias_transfer_url = (
                 config.URL
@@ -75,6 +82,7 @@ def alias_transfer_send_route(alias_id):
     return render_template(
         "dashboard/alias_transfer_send.html",
         alias=alias,
+        alias_used_for_sign_in=alias_used_for_sign_in(alias),
         alias_transfer_url=alias_transfer_url,
         link_active=alias.transfer_token_expiration is not None
         and alias.transfer_token_expiration > arrow.utcnow(),
@@ -125,9 +133,14 @@ def alias_transfer_receive_route():
         )
         return redirect(url_for("dashboard.index"))
 
-    mailboxes = current_user.mailboxes()
+    mailboxes = [mb for mb in current_user.mailboxes() if not mb.is_admin_disabled()]
+
+    csrf_form = CSRFValidationForm()
 
     if request.method == "POST":
+        if not csrf_form.validate():
+            flash("Invalid request", "warning")
+            return redirect(request.url)
         mailbox_ids = request.form.getlist("mailbox_ids")
         # check if mailbox is not tempered with
         mailboxes = []
@@ -140,11 +153,35 @@ def alias_transfer_receive_route():
             ):
                 flash("Something went wrong, please retry", "warning")
                 return redirect(request.url)
+            if mailbox.is_admin_disabled():
+                flash(
+                    "Cannot assign admin-disabled mailbox. Please contact support.",
+                    "error",
+                )
+                return redirect(request.url)
             mailboxes.append(mailbox)
 
         if not mailboxes:
             flash("You must select at least 1 mailbox", "warning")
             return redirect(request.url)
+
+        Alias.lock_for_update(alias.id)
+        Session.refresh(alias)
+
+        if alias.transfer_token != token and alias.transfer_token != hashed_token:
+            flash("Invalid link", "error")
+            return redirect(url_for("dashboard.index"))
+
+        if (
+            alias.transfer_token_expiration is not None
+            and alias.transfer_token_expiration < arrow.utcnow()
+        ):
+            flash("Expired link, please request a new one", "error")
+            return redirect(url_for("dashboard.index"))
+
+        if alias.user_id == current_user.id:
+            flash("You already own this alias", "warning")
+            return redirect(url_for("dashboard.index"))
 
         LOG.d(
             "transfer alias %s from %s to %s with %s with token %s",
@@ -156,7 +193,6 @@ def alias_transfer_receive_route():
         )
         transfer_alias(alias, current_user, mailboxes)
 
-        # reset transfer token
         alias.transfer_token = None
         alias.transfer_token_expiration = None
         Session.commit()
@@ -168,4 +204,5 @@ def alias_transfer_receive_route():
         "dashboard/alias_transfer_receive.html",
         alias=alias,
         mailboxes=mailboxes,
+        csrf_form=csrf_form,
     )

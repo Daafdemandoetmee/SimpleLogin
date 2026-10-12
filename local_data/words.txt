@@ -1,6 +1,4 @@
 abacus
-abdomen
-abdominal
 abide
 abiding
 ability
@@ -101,7 +99,6 @@ aground
 ahead
 ahoy
 aide
-aids
 aim
 ajar
 alabaster
@@ -745,8 +742,6 @@ bullish
 bullpen
 bullring
 bullseye
-bullwhip
-bully
 bunch
 bundle
 bungee
@@ -883,7 +878,6 @@ cascade
 case
 cash
 casing
-casino
 casket
 cassette
 casually
@@ -895,17 +889,13 @@ catalyze
 catapult
 cataract
 catatonic
-catcall
 catchable
 catcher
 catching
 catchy
 caterer
 catering
-catfight
-catfish
 cathedral
-cathouse
 catlike
 catnap
 catnip
@@ -915,7 +905,6 @@ cattishly
 cattle
 catty
 catwalk
-caucasian
 caucus
 causal
 causation
@@ -1033,7 +1022,6 @@ chosen
 chowder
 chowtime
 chrome
-chubby
 chuck
 chug
 chummy
@@ -1149,7 +1137,6 @@ coherence
 coherent
 cohesive
 coil
-coke
 cola
 cold
 coleslaw
@@ -1644,7 +1631,6 @@ deflected
 deflector
 defog
 deforest
-defraud
 defrost
 deftly
 defuse
@@ -1674,8 +1660,6 @@ delta
 deluge
 delusion
 deluxe
-demanding
-demeaning
 demeanor
 demise
 democracy
@@ -1817,7 +1801,6 @@ directly
 directory
 direness
 dirtiness
-disabled
 disagree
 disallow
 disarm
@@ -1897,9 +1880,6 @@ divisible
 divisibly
 division
 divisive
-divorcee
-dizziness
-dizzy
 doable
 docile
 dock
@@ -1913,7 +1893,6 @@ dole
 dollar
 dollhouse
 dollop
-dolly
 dolphin
 domain
 domelike
@@ -2027,7 +2006,6 @@ duh
 duke
 dumping
 dumpling
-dumpster
 duo
 dupe
 duplex
@@ -2036,14 +2014,12 @@ duplicity
 durable
 durably
 duration
-duress
 during
 dusk
 dust
 dutiful
 duty
 duvet
-dwarf
 dweeb
 dwelled
 dweller
@@ -2053,8 +2029,6 @@ dwindling
 dynamic
 dynamite
 dynasty
-dyslexia
-dyslexic
 each
 eagle
 earache
@@ -2093,7 +2067,6 @@ eatery
 eating
 eats
 ebay
-ebony
 ebook
 ecard
 eccentric
@@ -2387,8 +2360,6 @@ exclude
 excluding
 exclusion
 exclusive
-excretion
-excretory
 excursion
 excusable
 excusably
@@ -2408,8 +2379,6 @@ existing
 exit
 exodus
 exonerate
-exorcism
-exorcist
 expand
 expanse
 expansion
@@ -2495,7 +2464,6 @@ fanning
 fantasize
 fantastic
 fantasy
-fascism
 fastball
 faster
 fasting
@@ -2773,7 +2741,6 @@ gallows
 gallstone
 galore
 galvanize
-gambling
 game
 gaming
 gamma
@@ -3040,7 +3007,6 @@ guiding
 guileless
 guise
 gulf
-gullible
 gully
 gulp
 gumball
@@ -3052,10 +3018,6 @@ gurgle
 gurgling
 guru
 gush
-gusto
-gusty
-gutless
-guts
 gutter
 guy
 guzzler
@@ -3254,8 +3216,6 @@ humble
 humbling
 humbly
 humid
-humiliate
-humility
 humming
 hummus
 humongous
@@ -3283,7 +3243,6 @@ hurray
 hurricane
 hurried
 hurry
-hurt
 husband
 hush
 husked
@@ -3304,8 +3263,6 @@ hypnotic
 hypnotism
 hypnotist
 hypnotize
-hypocrisy
-hypocrite
 ibuprofen
 ice
 iciness
@@ -3335,7 +3292,6 @@ image
 imaginary
 imagines
 imaging
-imbecile
 imitate
 imitation
 immerse
@@ -3737,12 +3693,6 @@ luridness
 lurk
 lushly
 lushness
-luster
-lustfully
-lustily
-lustiness
-lustrous
-lusty
 luxurious
 luxury
 lying
@@ -3758,7 +3708,6 @@ machine
 machinist
 magazine
 magenta
-maggot
 magical
 magician
 magma
@@ -3782,10 +3731,6 @@ makeshift
 making
 malformed
 malt
-mama
-mammal
-mammary
-mammogram
 manager
 managing
 manatee
@@ -3798,7 +3743,6 @@ mangle
 mango
 mangy
 manhandle
-manhole
 manhood
 manhunt
 manicotti
@@ -3813,7 +3757,6 @@ manmade
 manned
 mannish
 manor
-manpower
 mantis
 mantra
 manual
@@ -3850,7 +3793,6 @@ mashed
 mashing
 massager
 masses
-massive
 mastiff
 matador
 matchbook
@@ -3863,15 +3805,11 @@ maternal
 maternity
 math
 mating
-matriarch
 matrimony
 matrix
 matron
 matted
 matter
-maturely
-maturing
-maturity
 mauve
 maverick
 maximize
@@ -3891,9 +3829,6 @@ modify
 modular
 modulator
 module
-moisten
-moistness
-moisture
 molar
 molasses
 mold
@@ -3946,11 +3881,7 @@ morality
 morally
 morbidity
 morbidly
-morphine
-morphing
 morse
-mortality
-mortally
 mortician
 mortified
 mortify
@@ -3976,7 +3907,6 @@ mournful
 mouse
 mousiness
 moustache
-mousy
 mouth
 movable
 move
@@ -3985,7 +3915,6 @@ moving
 mower
 mowing
 much
-muck
 mud
 mug
 mulberry
@@ -4000,9 +3929,6 @@ multitude
 mumble
 mumbling
 mumbo
-mummified
-mummify
-mummy
 mumps
 munchkin
 mundane
@@ -4055,8 +3981,6 @@ napped
 napping
 nappy
 narrow
-nastily
-nastiness
 national
 native
 nativity
@@ -4163,7 +4087,6 @@ obstruct
 obtain
 obtrusive
 obvious
-occultist
 occupancy
 occupant
 occupier
@@ -4479,7 +4402,6 @@ pasta
 pasted
 pastel
 pastime
-pastor
 pastrami
 pasture
 pasty
@@ -4491,7 +4413,6 @@ path
 patience
 patient
 patio
-patriarch
 patriot
 patrol
 patronage
@@ -4582,7 +4503,6 @@ pettiness
 petty
 petunia
 phantom
-phobia
 phoenix
 phonebook
 phoney
@@ -4641,7 +4561,6 @@ plot
 plow
 ploy
 pluck
-plug
 plunder
 plunging
 plural
@@ -4798,7 +4717,6 @@ princess
 print
 prior
 prism
-prison
 prissy
 pristine
 privacy
@@ -4822,8 +4740,6 @@ prodigal
 prodigy
 produce
 product
-profane
-profanity
 professed
 professor
 profile
@@ -4911,7 +4827,6 @@ pupil
 puppet
 puppy
 purchase
-pureblood
 purebred
 purely
 pureness
@@ -5083,7 +4998,6 @@ recharger
 recipient
 recital
 recite
-reckless
 reclaim
 recliner
 reclining
@@ -5476,7 +5390,6 @@ rubdown
 ruby
 ruckus
 rudder
-rug
 ruined
 rule
 rumble
@@ -5484,7 +5397,6 @@ rumbling
 rummage
 rumor
 runaround
-rundown
 runner
 running
 runny
@@ -5554,7 +5466,6 @@ sandpaper
 sandpit
 sandstone
 sandstorm
-sandworm
 sandy
 sanitary
 sanitizer
@@ -5577,7 +5488,6 @@ satisfy
 saturate
 saturday
 sauciness
-saucy
 sauna
 savage
 savanna
@@ -5588,7 +5498,6 @@ savor
 saxophone
 say
 scabbed
-scabby
 scalded
 scalding
 scale
@@ -5623,7 +5532,6 @@ science
 scientist
 scion
 scoff
-scolding
 scone
 scoop
 scooter
@@ -5687,8 +5595,6 @@ sedate
 sedation
 sedative
 sediment
-seduce
-seducing
 segment
 seismic
 seizing
@@ -5935,7 +5841,6 @@ skimpily
 skincare
 skinless
 skinning
-skinny
 skintight
 skipper
 skipping
@@ -5992,10 +5897,6 @@ slit
 sliver
 slobbery
 slogan
-sloped
-sloping
-sloppily
-sloppy
 slot
 slouching
 slouchy
@@ -6011,7 +5912,6 @@ smartness
 smasher
 smashing
 smashup
-smell
 smelting
 smile
 smilingly
@@ -6021,11 +5921,6 @@ smith
 smitten
 smock
 smog
-smoked
-smokeless
-smokiness
-smoking
-smoky
 smolder
 smooth
 smother
@@ -6047,7 +5942,6 @@ sneer
 sneeze
 sneezing
 snide
-sniff
 snippet
 snipping
 snitch
@@ -6203,7 +6097,6 @@ squiggle
 squiggly
 squint
 squire
-squirt
 squishier
 squishy
 stability
@@ -6296,17 +6189,12 @@ stifle
 stifling
 stillness
 stilt
-stimulant
-stimulate
-stimuli
 stimulus
 stinger
 stingily
 stinging
 stingray
 stingy
-stinking
-stinky
 stipend
 stipulate
 stir
@@ -6323,7 +6211,6 @@ stoning
 stony
 stood
 stooge
-stool
 stoop
 stoplight
 stoppable
@@ -6458,12 +6345,9 @@ subwoofer
 subzero
 succulent
 such
-suction
 sudden
 sudoku
 suds
-sufferer
-suffering
 suffice
 suffix
 suffocate
@@ -6515,7 +6399,6 @@ surplus
 surprise
 surreal
 surrender
-surrogate
 surround
 survey
 survival
@@ -6528,7 +6411,6 @@ suspend
 suspense
 sustained
 sustainer
-swab
 swaddling
 swagger
 swampland
@@ -6536,7 +6418,6 @@ swan
 swapping
 swarm
 sway
-swear
 sweat
 sweep
 swell
@@ -6605,9 +6486,6 @@ talcum
 talisman
 tall
 talon
-tamale
-tameness
-tamer
 tamper
 tank
 tanned
@@ -6647,7 +6525,6 @@ thaw
 theater
 theatrics
 thee
-theft
 theme
 theology
 theorize
@@ -6752,7 +6629,6 @@ trade
 trading
 tradition
 traffic
-tragedy
 trailing
 trailside
 train
@@ -6772,7 +6648,6 @@ trapped
 trapper
 trapping
 traps
-trash
 travel
 traverse
 travesty
@@ -6927,7 +6802,6 @@ unbent
 unbiased
 unbitten
 unblended
-unblessed
 unblock
 unbolted
 unbounded
@@ -7008,7 +6882,6 @@ undertone
 undertook
 undertow
 underuse
-underwear
 underwent
 underwire
 undesired
@@ -7061,7 +6934,6 @@ unfunded
 unglazed
 ungloved
 unglue
-ungodly
 ungraded
 ungreased
 unguarded
@@ -7093,7 +6965,6 @@ uninsured
 uninvited
 union
 uniquely
-unisexual
 unison
 unissued
 unit
@@ -7554,8 +7425,6 @@ wheat
 whenever
 whiff
 whimsical
-whinny
-whiny
 whisking
 whoever
 whole
@@ -7661,7 +7530,6 @@ wrongness
 wrought
 xbox
 xerox
-yahoo
 yam
 yanking
 yapping

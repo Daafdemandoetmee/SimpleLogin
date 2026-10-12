@@ -4,19 +4,22 @@ from uuid import UUID
 import arrow
 import pytest
 
-from app.config import EMAIL_DOMAIN, MAX_NB_EMAIL_FREE_PLAN, NOREPLY
+from app.config import EMAIL_DOMAIN, MAX_NB_EMAIL_FREE_PLAN
+from app.email_utils import get_noreply_email
 from app.db import Session
 from app.email_utils import parse_full_address, generate_reply_email
 from app.models import (
     generate_random_alias_email,
     Alias,
     Contact,
+    EmailLog,
     Mailbox,
     SenderFormatEnum,
     EnumE,
     Subscription,
     PlanEnum,
     PADDLE_SUBSCRIPTION_GRACE_DAYS,
+    SyncEvent,
 )
 from tests.utils import login, create_new_user, random_token
 
@@ -35,7 +38,9 @@ def test_generate_email(flask_client):
 def test_profile_picture_url(flask_client):
     user = create_new_user()
 
-    assert user.profile_picture_url() == "http://sl.test/static/default-avatar.png"
+    assert (
+        user.profile_picture_url() == f"http://{EMAIL_DOMAIN}/static/default-avatar.png"
+    )
 
 
 def test_suggested_emails_for_user_who_cannot_create_new_alias(flask_client):
@@ -297,24 +302,25 @@ def test_user_get_subscription_grace_period(flask_client):
 def test_create_contact_for_noreply(flask_client):
     user = create_new_user()
     alias = Alias.filter(Alias.user_id == user.id).first()
+    noreply_email = get_noreply_email()
 
-    # create a contact with NOREPLY as reply_email
+    # create a contact with noreply as reply_email
     Contact.create(
         user_id=user.id,
         alias_id=alias.id,
-        website_email=f"{random.random()}@contact.test",
-        reply_email=NOREPLY,
+        website_email=f"{random.random()}@contact.lan",
+        reply_email=noreply_email,
         commit=True,
     )
 
-    # create a contact for NOREPLY shouldn't raise CannotCreateContactForReverseAlias
+    # create a contact for noreply shouldn't raise CannotCreateContactForReverseAlias
     contact = Contact.create(
         user_id=user.id,
         alias_id=alias.id,
-        website_email=NOREPLY,
-        reply_email=generate_reply_email(NOREPLY, alias),
+        website_email=noreply_email,
+        reply_email=generate_reply_email(noreply_email, alias),
     )
-    assert contact.website_email == NOREPLY
+    assert contact.website_email == noreply_email
 
 
 def test_user_can_send_receive():
@@ -325,3 +331,98 @@ def test_user_can_send_receive():
     user.disabled = False
     user.delete_on = arrow.now()
     assert not user.can_send_or_receive()
+
+
+def test_sync_event_dead_letter():
+    # remove all SyncEvents before the test
+    all_events = SyncEvent.all()
+    for event in all_events:
+        SyncEvent.delete(event.id, commit=True)
+
+    # create an expired not taken event
+    e1 = SyncEvent.create(
+        content=b"content",
+        created_at=arrow.now().shift(minutes=-15),
+        taken_time=None,
+        commit=True,
+    )
+
+    # create an expired taken event (but too long ago)
+    e2 = SyncEvent.create(
+        content=b"content",
+        created_at=arrow.now().shift(minutes=-15),
+        taken_time=arrow.now().shift(minutes=-14),
+        commit=True,
+    )
+
+    # create an expired taken event (but recently)
+    e3 = SyncEvent.create(
+        content=b"content",
+        created_at=arrow.now().shift(minutes=-15),
+        taken_time=arrow.now().shift(minutes=-1),
+        commit=True,
+    )
+
+    # create a normal event
+    e4 = SyncEvent.create(
+        content=b"content",
+        created_at=arrow.now(),
+        commit=True,
+    )
+
+    # create event with too many retries
+    max_retries = 5
+    e5 = SyncEvent.create(
+        content=b"content",
+        retry_count=max_retries + 1,
+        created_at=arrow.now(),
+        commit=True,
+    )
+
+    # get dead letter events
+    dead_letter_events = SyncEvent.get_dead_letter(
+        older_than=arrow.now().shift(minutes=-10), max_retries=max_retries
+    )
+    assert len(dead_letter_events) == 2
+    assert e1 in dead_letter_events
+    assert e2 in dead_letter_events
+    assert e3 not in dead_letter_events
+    assert e4 not in dead_letter_events
+    assert e5 not in dead_letter_events
+
+
+def test_email_log_create_updates_alias_last_email_log_id(flask_client):
+    user = create_new_user()
+    alias = Alias.create_new_random(user)
+    mailbox = Mailbox.get(alias.mailbox_id)
+    contact = Contact.create(
+        user_id=user.id,
+        alias_id=alias.id,
+        website_email=f"{random_token()}@example.com",
+        reply_email=f"reply-{random_token()}@sl.local",
+        commit=True,
+    )
+
+    el1 = EmailLog.create(
+        contact_id=contact.id,
+        user_id=user.id,
+        mailbox_id=mailbox.id,
+        alias_id=alias.id,
+        message_id="msg1@test",
+        commit=True,
+    )
+
+    Session.expire(alias)
+    assert alias.last_email_log_id == el1.id
+
+    el2 = EmailLog.create(
+        contact_id=contact.id,
+        user_id=user.id,
+        mailbox_id=mailbox.id,
+        alias_id=alias.id,
+        message_id="msg2@test",
+        commit=True,
+    )
+
+    Session.expire(alias)
+    assert alias.last_email_log_id == el2.id

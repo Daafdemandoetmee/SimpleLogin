@@ -1,12 +1,12 @@
 import uuid
 
-from flask import url_for, g
+from flask import url_for
 
 from app import config
 from app.config import EMAIL_DOMAIN, MAX_NB_EMAIL_FREE_PLAN
 from app.db import Session
 from app.models import Alias, CustomDomain, AliasUsedOn
-from tests.utils import login, random_domain
+from tests.utils import fix_rate_limit_after_request, login, random_domain
 
 
 def test_with_hostname(flask_client):
@@ -17,7 +17,7 @@ def test_with_hostname(flask_client):
     )
 
     assert r.status_code == 201
-    assert r.json["alias"].endswith("d1.test")
+    assert r.json["alias"].endswith("d1.lan")
 
     # make sure alias starts with the suggested prefix
     assert r.json["alias"].startswith("test")
@@ -133,7 +133,7 @@ def test_too_many_requests(flask_client):
         )
         # to make flask-limiter work with unit test
         # https://github.com/alisaifee/flask-limiter/issues/147#issuecomment-642683820
-        g._rate_limiting_complete = False
+        fix_rate_limit_after_request()
     else:
         # last request
         assert r.status_code == 429

@@ -5,9 +5,10 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, validators
 
 from app import email_utils, config
+from app.abuser_utils import check_if_abuser_email
 from app.auth.base import auth_bp
-from app.config import CONNECT_WITH_PROTON, CONNECT_WITH_OIDC_ICON
 from app.auth.views.login_utils import get_referral
+from app.config import CONNECT_WITH_PROTON, CONNECT_WITH_OIDC_ICON
 from app.config import URL, HCAPTCHA_SECRET, HCAPTCHA_SITEKEY
 from app.db import Session
 from app.email_utils import (
@@ -74,6 +75,8 @@ def register():
         if not email_can_be_used_as_mailbox(email):
             flash("You cannot use this email address as your personal inbox.", "error")
             RegisterEvent(RegisterEvent.ActionType.email_in_use).send()
+        elif check_if_abuser_email(email):
+            flash("The email address provided is banned from registration.", "error")
         else:
             sanitized_email = sanitize_email(form.email.data)
             if personal_email_already_used(email) or personal_email_already_used(
@@ -115,7 +118,8 @@ def register():
 
 
 def send_activation_email(user, next_url):
-    # the activation code is valid for 1h
+    # the activation code is valid for 1h and delete all previous codes
+    Session.query(ActivationCode).filter(ActivationCode.user_id == user.id).delete()
     activation = ActivationCode.create(user_id=user.id, code=random_string(30))
     Session.commit()
 
@@ -125,4 +129,4 @@ def send_activation_email(user, next_url):
         LOG.d("redirect user to %s after activation", next_url)
         activation_link = activation_link + "&next=" + encode_url(next_url)
 
-    email_utils.send_activation_email(user.email, activation_link)
+    email_utils.send_activation_email(user, activation_link)

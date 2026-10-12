@@ -118,6 +118,13 @@ class AccountAlreadyLinkedToAnotherUserException(LinkException):
         super().__init__("This account is linked to another user")
 
 
+class EmailNotAllowed(LinkException):
+    def __init__(self):
+        super().__init__(
+            "The email used by this account is not allowed to be used for aliases"
+        )
+
+
 class AccountIsUsingAliasAsEmail(LinkException):
     def __init__(self):
         super().__init__("Your account has an alias as it's email address")
@@ -128,3 +135,17 @@ class ProtonAccountNotVerified(LinkException):
         super().__init__(
             "The Proton account you are trying to use has not been verified"
         )
+
+
+class AliasDomainForbidden(SLException):
+    """raised when trying to create an alias on a domain that belongs to another user"""
+
+    def error_for_user(self) -> str:
+        return "You cannot create aliases on this domain"
+
+
+class CannotCreateAliasQuotaExceeded(SLException):
+    """raised when an alias cannot be created because there is no quota left"""
+
+    def __init__(self):
+        super().__init__("You cannot create more aliases")
